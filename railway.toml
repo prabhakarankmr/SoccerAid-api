@@ -1,0 +1,13 @@
+# BACKEND_INSTRUCTIONS.md §12 — Railway deployment.
+# Configure in the Railway dashboard per service: pre-deploy command `npx prisma migrate deploy`
+# (runs once per deploy, not per replica) and replicas >= 2.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/api/v1/health/ready"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

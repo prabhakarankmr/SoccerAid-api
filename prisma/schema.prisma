@@ -1,0 +1,471 @@
+// BACKEND_INSTRUCTIONS.md §4 — Data Model
+// Driver-adapter-only (Prisma 7). Connection URL lives in prisma.config.ts; the app wires its
+// own adapter instance (see src/infra/prisma/prisma.service.ts) using DATABASE_URL (pooled).
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  runtime      = "nodejs"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Enums
+// ──────────────────────────────────────────────────────────────────────────
+
+enum Side {
+  HOME
+  AWAY
+}
+
+enum MatchStatus {
+  SCHEDULED
+  LINEUPS_SET
+  LIVE
+  PAUSED
+  HALF_TIME
+  FULL_TIME
+  EXTRA_TIME
+  PENALTIES
+  COMPLETED
+  ABANDONED
+}
+
+enum TournamentType {
+  LEAGUE
+  KNOCKOUT
+  GROUPS_KNOCKOUT
+}
+
+// Any new value added here MUST also be added to BACKEND_INSTRUCTIONS.md §4 (checked by
+// scripts/check-instructions.ts in CI).
+enum MatchEventType {
+  KICK_OFF
+  PASS
+  INTERCEPTION
+  TACKLE
+  BALL_OUT
+  SHOT_ON_TARGET
+  SHOT_OFF_TARGET
+  SHOT_SAVED
+  SHOT_BLOCKED
+  WOODWORK
+  GOAL
+  OWN_GOAL
+  CORNER
+  CORNER_TAKEN
+  CLEARED
+  GOAL_KICK
+  FOUL
+  YELLOW_CARD
+  RED_CARD
+  SUBSTITUTION
+  GK_CHANGE
+  POSSESSION_SET
+  PAUSE
+  RESUME
+  HALF_TIME
+  SECOND_HALF_START
+  FULL_TIME
+  PENALTY_SHOOTOUT_KICK
+  UNDO
+}
+
+enum TeamRole {
+  OWNER
+  CAPTAIN
+  PLAYER
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Identity
+// ──────────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String         @id @default(cuid(2))
+  phone         String         @unique
+  name          String
+  avatarUrl     String?
+  player        Player?
+  teams         Team[]
+  tournaments   Tournament[]
+  refreshTokens RefreshToken[]
+  matchScorers  MatchScorer[]
+  createdEvents MatchEvent[]   @relation("MatchEventCreatedBy")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(cuid(2))
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  // Session policy (§9.5): refresh tokens carry no TTL of their own — null here means "does not
+  // expire on its own." Validity = `revokedAt IS NULL`. Ended only by explicit logout or by
+  // reuse-detection revoking the whole rotation chain (a replayed, already-rotated token is a
+  // theft signal). Nullable rather than removed: keeps room for a future "remember this device"
+  // toggle without another migration.
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  replacedBy String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Player {
+  id                 String               @id @default(cuid(2))
+  displayName        String
+  phone              String?              @unique
+  userId             String?              @unique
+  user               User?                @relation(fields: [userId], references: [id])
+  claimedAt          DateTime?
+  preferredPosition  String?
+  deletedAt          DateTime?
+  teamMemberships    TeamMember[]
+  lineups            MatchLineup[]
+  squadEntries       TournamentSquadPlayer[]
+  matchStats         PlayerMatchStat[]
+  careerStats        PlayerCareerStat[]
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  @@index([displayName])
+  @@index([deletedAt])
+  @@map("players")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Teams
+// ──────────────────────────────────────────────────────────────────────────
+
+model Team {
+  id             String           @id @default(cuid(2))
+  name           String
+  shortName      String
+  logoUrl        String?
+  ownerId        String
+  owner          User             @relation(fields: [ownerId], references: [id])
+  deletedAt      DateTime?
+  members        TeamMember[]
+  homeMatches    Match[]          @relation("HomeTeam")
+  awayMatches    Match[]          @relation("AwayTeam")
+  tournamentTeams TournamentTeam[]
+  standings      Standing[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([ownerId])
+  @@index([name])
+  @@index([deletedAt])
+  @@map("teams")
+}
+
+model TeamMember {
+  id        String   @id @default(cuid(2))
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id])
+  jerseyNo  Int?
+  role      TeamRole @default(PLAYER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([teamId, playerId])
+  @@index([playerId])
+  @@map("team_members")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Tournaments
+// ──────────────────────────────────────────────────────────────────────────
+
+model Tournament {
+  id             String           @id @default(cuid(2))
+  name           String
+  type           TournamentType
+  playersPerSide Int
+  rules          Json?
+  startDate      DateTime
+  ownerId        String
+  owner          User             @relation(fields: [ownerId], references: [id])
+  videoLink      String?
+  groups         TournamentGroup[]
+  teams          TournamentTeam[]
+  matches        Match[]
+  standings      Standing[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([ownerId])
+  @@index([type])
+  @@index([startDate])
+  @@map("tournaments")
+}
+
+model TournamentGroup {
+  id           String           @id @default(cuid(2))
+  tournamentId String
+  tournament   Tournament       @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  name         String
+  teams        TournamentTeam[]
+  standings    Standing[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([tournamentId])
+  @@map("tournament_groups")
+}
+
+model TournamentTeam {
+  id           String                  @id @default(cuid(2))
+  tournamentId String
+  tournament   Tournament              @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  teamId       String
+  team         Team                    @relation(fields: [teamId], references: [id])
+  groupId      String?
+  group        TournamentGroup?        @relation(fields: [groupId], references: [id])
+  squad        TournamentSquadPlayer[]
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  @@unique([tournamentId, teamId])
+  @@index([groupId])
+  @@map("tournament_teams")
+}
+
+model TournamentSquadPlayer {
+  id               String         @id @default(cuid(2))
+  tournamentTeamId String
+  tournamentTeam   TournamentTeam @relation(fields: [tournamentTeamId], references: [id], onDelete: Cascade)
+  playerId         String
+  player           Player         @relation(fields: [playerId], references: [id])
+  jerseyNo         Int?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([tournamentTeamId, playerId])
+  @@map("tournament_squad_players")
+}
+
+// Projection — rebuilt by the leaderboards/standings job after every FULL_TIME match.
+model Standing {
+  id           String           @id @default(cuid(2))
+  tournamentId String
+  tournament   Tournament       @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  groupId      String?
+  group        TournamentGroup? @relation(fields: [groupId], references: [id])
+  teamId       String
+  team         Team             @relation(fields: [teamId], references: [id])
+  played       Int              @default(0)
+  won          Int              @default(0)
+  drawn        Int              @default(0)
+  lost         Int              @default(0)
+  gf           Int              @default(0)
+  ga           Int              @default(0)
+  gd           Int              @default(0)
+  points       Int              @default(0)
+  form         String           @default("")
+  updatedAt    DateTime         @updatedAt
+
+  @@unique([tournamentId, teamId])
+  @@index([groupId])
+  @@map("standings")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Matches
+// ──────────────────────────────────────────────────────────────────────────
+
+model Match {
+  id              String         @id @default(cuid(2))
+  tournamentId    String?
+  tournament      Tournament?    @relation(fields: [tournamentId], references: [id], onDelete: SetNull)
+  stage           String?
+  homeTeamId      String
+  homeTeam        Team           @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  awayTeamId      String
+  awayTeam        Team           @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  playersPerSide  Int
+  formationHome   String
+  formationAway   String
+  halfDurationSec Int
+  extraTimeSec    Int?
+  hasPenalties    Boolean        @default(false)
+  status          MatchStatus    @default(SCHEDULED)
+  scheduledAt     DateTime?
+  lastSeq         Int            @default(0)
+  version         Int            @default(0)
+  lineups         MatchLineup[]
+  scorers         MatchScorer[]
+  events          MatchEvent[]
+  state           MatchState?
+  playerStats     PlayerMatchStat[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([tournamentId, status])
+  @@index([status, scheduledAt])
+  @@index([homeTeamId])
+  @@index([awayTeamId])
+  @@map("matches")
+}
+
+model MatchLineup {
+  id           String   @id @default(cuid(2))
+  matchId      String
+  match        Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  playerId     String
+  player       Player   @relation(fields: [playerId], references: [id])
+  side         Side
+  isStarter    Boolean
+  isGoalkeeper Boolean  @default(false)
+  slotIndex    Int?
+  posX         Float?
+  posY         Float?
+  jerseyNo     Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([matchId, playerId])
+  @@map("match_lineups")
+}
+
+model MatchScorer {
+  id        String   @id @default(cuid(2))
+  matchId   String
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([matchId, userId])
+  @@index([userId])
+  @@map("match_scorers")
+}
+
+// APPEND-ONLY. Never update/delete rows — UNDO is a compensating event (voidedBySeq).
+model MatchEvent {
+  id            String         @id @default(cuid(2))
+  matchId       String
+  match         Match          @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  seq           Int
+  clientEventId String
+  type          MatchEventType
+  side          Side?
+  playerId      String?
+  toPlayerId    String?
+  payload       Json?
+  matchClockSec Int
+  voidedBySeq   Int?
+  createdById   String
+  createdBy     User           @relation("MatchEventCreatedBy", fields: [createdById], references: [id])
+  createdAt     DateTime       @default(now())
+
+  @@unique([matchId, seq])
+  @@unique([matchId, clientEventId])
+  @@index([matchId, type])
+  @@map("match_events")
+}
+
+// Projection — 1 row per match, what the live screen needs. Rebuilt from MatchEvent.
+model MatchState {
+  matchId          String    @id
+  match            Match     @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  homeScore        Int       @default(0)
+  awayScore        Int       @default(0)
+  possessionPlayerId String?
+  possessionSide   Side?
+  clockRunning     Boolean   @default(false)
+  clockStartedAt   DateTime?
+  elapsedSec       Int       @default(0)
+  period           String    @default("PRE")
+  possessionMsHome BigInt    @default(0)
+  possessionMsAway BigInt    @default(0)
+  updatedAt        DateTime  @updatedAt
+
+  @@map("match_states")
+}
+
+// Projection — per-player, per-match counters. Rebuilt from MatchEvent.
+model PlayerMatchStat {
+  id             String   @id @default(cuid(2))
+  matchId        String
+  match          Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  playerId       String
+  player         Player   @relation(fields: [playerId], references: [id])
+  side           Side
+  goals          Int      @default(0)
+  assists        Int      @default(0)
+  passes         Int      @default(0)
+  passesReceived Int      @default(0)
+  interceptions  Int      @default(0)
+  tackles        Int      @default(0)
+  shots          Int      @default(0)
+  shotsOnTarget  Int      @default(0)
+  shotsOffTarget Int      @default(0)
+  saves          Int      @default(0)
+  blocks         Int      @default(0)
+  woodwork       Int      @default(0)
+  cornersWon     Int      @default(0)
+  cornersTaken   Int      @default(0)
+  goalKicks      Int      @default(0)
+  fouls          Int      @default(0)
+  yellowCards    Int      @default(0)
+  redCards       Int      @default(0)
+  ballsLost      Int      @default(0)
+  possessionMs   BigInt   @default(0)
+  minutesPlayed  Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  @@unique([matchId, playerId])
+  @@index([playerId])
+  @@map("player_match_stats")
+}
+
+// Projection — lifetime (scope = "ALL") or per-tournament (scope = tournamentId) totals.
+model PlayerCareerStat {
+  id             String   @id @default(cuid(2))
+  playerId       String
+  player         Player   @relation(fields: [playerId], references: [id])
+  scope          String
+  matches        Int      @default(0)
+  wins           Int      @default(0)
+  goals          Int      @default(0)
+  assists        Int      @default(0)
+  passes         Int      @default(0)
+  passesReceived Int      @default(0)
+  interceptions  Int      @default(0)
+  tackles        Int      @default(0)
+  shots          Int      @default(0)
+  shotsOnTarget  Int      @default(0)
+  shotsOffTarget Int      @default(0)
+  saves          Int      @default(0)
+  blocks         Int      @default(0)
+  woodwork       Int      @default(0)
+  cornersWon     Int      @default(0)
+  cornersTaken   Int      @default(0)
+  goalKicks      Int      @default(0)
+  fouls          Int      @default(0)
+  yellowCards    Int      @default(0)
+  redCards       Int      @default(0)
+  ballsLost      Int      @default(0)
+  possessionMs   BigInt   @default(0)
+  minutesPlayed  Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  @@unique([playerId, scope])
+  @@map("player_career_stats")
+}
