@@ -423,6 +423,17 @@ POST /api/v1/matches/:id/events   { clientEventId, expectedSeq, type, side?, pla
   signature proves authenticity, and `argon2.verify(row.tokenHash, token)` against that *one* row
   is the cheap extra check the stored hash is for. A row found already `revokedAt` ⇒ reuse ⇒ revoke
   the whole chain (`AuthService.refresh`, `src/modules/auth/`).
+  **Why it's signed with raw `jsonwebtoken`, not `this.jwtService` (`@nestjs/jwt`):** the module
+  registers a *global* `signOptions.expiresIn` (the access token's 15 min, `app.module.ts`), and
+  `JwtService`'s per-call options are shallow-merged on top of it (`{...global, ...perCall}`) — a
+  key can be overwritten, never unset. There's no way to express "no expiry" through it for a
+  second, differently-configured token type. (`expiresIn: undefined` doesn't work either —
+  `jsonwebtoken`'s validator checks key *presence* via `Object.keys()`, not value, so an
+  `undefined`-valued key still throws `"expiresIn" should be a number of seconds or string
+  representing a timespan`.) `issueTokenPair` therefore calls `jwt.sign(payload, secret)` directly
+  for the refresh token — passing no options object at all is the only way `jsonwebtoken` omits the
+  `exp` claim entirely. The access token still goes through `this.jwtService.sign()`, which is
+  correct there since it wants those exact global defaults.
 - 🚩 **OTP verification delegated to Firebase Phone Auth (interim).** The client calls Firebase
   Phone Auth directly (send + verify the SMS code on-device) and gets back a Firebase ID token;
   the backend's only job is `POST /auth/firebase/verify` verifying that token (`FirebaseAdminService`,
@@ -515,3 +526,4 @@ Reads this file and fails CI if any of these is missing from it: folder names in
 | 2026-10-22 | redis-deferred | Flagged Redis as not stood up yet (§11.1); throttler temporarily falls back to in-memory storage (§9.5) instead of hanging requests when Redis is unreachable. AuthModule still unimplemented. |
 | 2026-10-22 | session-policy | Decided session lifetime ahead of implementing AuthModule: access token stays short (15 min), refresh token has **no TTL** — ends only via logout or reuse-detection (§9.5). Removed `JWT_REFRESH_TTL` (§11); `RefreshToken.expiresAt` is now nullable (§4). |
 | 2026-10-23 | auth-firebase | Implemented AuthModule: `POST /auth/firebase/verify` · `/auth/refresh` · `/auth/logout` (§7.2). OTP verification delegated to Firebase Phone Auth for now — backend only verifies the client's Firebase ID token via `firebase-admin` (`src/infra/firebase/`, new §5 entry); `OTP_PROVIDER`/`OTP_API_KEY` left wired but unused (§9.5 flag, §11 env). New env vars `FIREBASE_PROJECT_ID`/`FIREBASE_CLIENT_EMAIL`/`FIREBASE_PRIVATE_KEY` (§11). Refresh-token lookup mechanism documented (§9.5): JWT carries `jti` = `RefreshToken` row id for O(1) lookup, argon2 hash checked against that one row. `User.name` is now nullable (§4) — a new signup has a verified phone but no name until the client's profile-setup step completes via `PATCH /me` (now implemented, together with `GET /me`; upserts/claims the matching `Player` by phone — see §1.1). Added repositories (`UsersRepository`, `PlayersRepository`, `AuthRepository`) per the Controller→Service→Repository layering (§3.1, §9.4). First Prisma migration (`20261023050310_init`) applied. |
+| 2026-10-23 | refresh-token-sign-fix | Fixed `POST /auth/firebase/verify` 500ing on every real (non-garbage) request — `issueTokenPair` signed the refresh token via `this.jwtService.sign(..., { expiresIn: undefined })` intending "no expiry," but `jsonwebtoken`'s validator rejects any *present* option key regardless of value (`"expiresIn" should be a number of seconds or string representing a timespan`). Switched to signing the refresh token with raw `jsonwebtoken` instead of `@nestjs/jwt`'s `JwtService` — detail added to §9.5. Verified live: a garbage token now correctly 401s with `OTP_INVALID` instead of 500ing, and `jwt.sign(payload, secret)` with no options object confirmed to omit `exp` entirely. |

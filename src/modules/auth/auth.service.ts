@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
+import * as jwt from 'jsonwebtoken';
 
 import { DomainException } from '../../common/errors';
 import { AppConfigService } from '../../config/app-config.service';
@@ -100,7 +101,7 @@ export class AuthService {
     }
 
     const next = await this.issueTokenPair(user.id, user.phone);
-    const nextPayload = this.jwtService.decode<RefreshTokenPayload>(next.refreshToken);
+    const nextPayload = jwt.decode(next.refreshToken) as RefreshTokenPayload;
     await this.authRepository.revokeRefreshToken(row.id, nextPayload.jti);
 
     return next;
@@ -120,10 +121,17 @@ export class AuthService {
     // The id is minted up front (not Prisma's default) because it has to go inside the JWT
     // before the row exists.
     const jti = randomUUID();
-    const refreshToken = this.jwtService.sign({ sub: userId, jti } satisfies RefreshTokenPayload, {
-      secret: this.config.jwtRefreshSecret,
-      expiresIn: undefined,
-    });
+    // Signed with jsonwebtoken directly, not this.jwtService: NestJS's JwtService always
+    // merges per-call sign options with the module's global defaults via a plain object
+    // spread (@nestjs/jwt's mergeJwtOptions) — a key can be overwritten, not unset, so
+    // there's no way to override the global `expiresIn` (the *access* token's 15m TTL) back
+    // to "no expiry" through it. Refresh tokens have no TTL by design (§9.5). (Previously
+    // tried `expiresIn: undefined` to mean "unset" — jsonwebtoken's validator checks key
+    // *presence*, not value, so that threw "expiresIn should be a number... or string".)
+    const refreshToken = jwt.sign(
+      { sub: userId, jti } satisfies RefreshTokenPayload,
+      this.config.jwtRefreshSecret,
+    );
     const tokenHash = await argon2.hash(refreshToken);
     await this.authRepository.createRefreshToken(jti, userId, tokenHash);
 
