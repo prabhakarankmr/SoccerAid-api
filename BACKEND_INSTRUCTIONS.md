@@ -82,7 +82,7 @@ The reference (Next.js) works, but has issues this backend must fix:
 | Realtime | `@nestjs/websockets` + `@nestjs/platform-socket.io` + `@socket.io/redis-adapter` |
 | Cache / pub-sub / rate-limit store | Redis (Railway Redis plugin) |
 | Validation | `class-validator` + `class-transformer` (global `ValidationPipe`) |
-| Auth | Phone OTP → JWT access (15 min) + rotating refresh token (no TTL — session lasts until logout/revocation, hashed in DB) |
+| Auth | Phone OTP → JWT access (15 min) + rotating refresh token (no TTL — session lasts until logout/revocation, hashed in DB). OTP send/verify is delegated to **Firebase Phone Auth** for now — the backend only verifies the resulting ID token (`firebase-admin`). See §9.5 flag. |
 | Docs | `@nestjs/swagger` (OpenAPI 3) — the mobile app generates its client from it |
 | Logging | `nestjs-pino` (JSON logs, request id) |
 | Security | `@fastify/helmet`, `@fastify/cors`, `@nestjs/throttler` (Redis storage) |
@@ -143,7 +143,9 @@ enum MatchEventType  {
   PAUSE RESUME HALF_TIME SECOND_HALF_START FULL_TIME PENALTY_SHOOTOUT_KICK UNDO
 }
 
-model User          { id, phone @unique, name, avatarUrl, player Player?, refreshTokens RefreshToken[] }
+model User          { id, phone @unique, name?, avatarUrl, player Player?, refreshTokens RefreshToken[] }
+// name is nullable: set at signup via Firebase (phone only), filled in by the client's
+// profile-setup step (PATCH /me) — see §9.5.
 model Player        { id, displayName, phone? @unique, userId? @unique, claimedAt?, preferredPosition?, ... }
 model Team          { id, name, shortName, logoUrl, ownerId, members TeamMember[] }   // name NOT globally unique
 model TeamMember    { teamId, playerId, jerseyNo?, role TeamRole, @@unique([teamId, playerId]) }
@@ -250,6 +252,7 @@ src/
     prisma/                  # PrismaService (driver adapter), transaction helper
     redis/                   # RedisService
     queue/                   # BullMQ setup
+    firebase/                # FirebaseAdminService — verifies Firebase Phone Auth ID tokens (§9.5)
   modules/
     auth/                    # OTP request/verify, refresh, logout
     users/
@@ -344,7 +347,7 @@ POST /api/v1/matches/:id/events   { clientEventId, expectedSeq, type, side?, pla
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/auth/otp/request` · `/auth/otp/verify` · `/auth/refresh` · `/auth/logout` | throttled 5/min/phone |
+| POST | `/auth/firebase/verify` · `/auth/refresh` · `/auth/logout` | `firebase/verify` takes the client's Firebase ID token (OTP already verified on-device), returns `{ accessToken, refreshToken, isNewUser, user }`; throttled 5/min/phone |
 | GET/PATCH | `/me` | |
 | GET/POST | `/players` · GET `/players/:id` · GET `/players/:id/stats?scope=` · POST `/players/:id/claim` | search by name/phone |
 | GET/POST/PATCH | `/teams` · `/teams/:id` · POST/DELETE `/teams/:id/members` | |
@@ -414,6 +417,18 @@ POST /api/v1/matches/:id/events   { clientEventId, expectedSeq, type, side?, pla
   treated as token theft and revokes the whole chain. Uninstalling the app wipes the device's
   stored refresh token, so the next launch naturally requires a fresh OTP login (new token pair) —
   no server-side handling needed for that case. Refresh tokens hashed (argon2), rotated on every use.
+  **Lookup mechanism:** the refresh token is itself a JWT (`JWT_REFRESH_SECRET`, no `exp`) carrying
+  `{ sub: userId, jti: refreshTokenRowId }`. `jti` gives an O(1) primary-key lookup to the
+  `RefreshToken` row (argon2 can't be looked up by hash — it's salted/non-deterministic); the JWT
+  signature proves authenticity, and `argon2.verify(row.tokenHash, token)` against that *one* row
+  is the cheap extra check the stored hash is for. A row found already `revokedAt` ⇒ reuse ⇒ revoke
+  the whole chain (`AuthService.refresh`, `src/modules/auth/`).
+- 🚩 **OTP verification delegated to Firebase Phone Auth (interim).** The client calls Firebase
+  Phone Auth directly (send + verify the SMS code on-device) and gets back a Firebase ID token;
+  the backend's only job is `POST /auth/firebase/verify` verifying that token (`FirebaseAdminService`,
+  `src/infra/firebase/`) and extracting `phone_number`. `OTP_PROVIDER`/`OTP_API_KEY` (§11) are
+  wired into the env schema but **unused** — nothing sends an SMS via MSG91/Twilio right now. Revisit
+  if/when OTP needs to move off Firebase (cost, delivery control, or non-phone-auth flows).
 - Authorization checks for ownership (tournament owner, team owner, match scorer) in guards/services — never trust client-sent `userId`.
 - Secrets only from env; `.env` never committed.
 
@@ -458,7 +473,8 @@ POST /api/v1/matches/:id/events   { clientEventId, expectedSeq, type, side?, pla
 | `DIRECT_URL` | Neon **direct** URL (migrations, via `prisma.config.ts`) |
 | `REDIS_URL` | Railway Redis |
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `JWT_ACCESS_TTL` | auth — no `JWT_REFRESH_TTL`: refresh tokens don't expire on a timer, see §9.5 |
-| `OTP_PROVIDER`, `OTP_API_KEY` | SMS provider (MSG91 / Twilio) |
+| `OTP_PROVIDER`, `OTP_API_KEY` | SMS provider (MSG91 / Twilio) — required to boot, currently unused (§9.5 flag) |
+| `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` | Firebase Admin service account — verifies Phone Auth ID tokens (§9.5). `FIREBASE_PRIVATE_KEY` is the PEM with literal `\n` escapes |
 | `CORS_ORIGINS` | comma list |
 | `EXPO_ACCESS_TOKEN` | push notifications |
 | `LOG_LEVEL` | pino level |
@@ -498,3 +514,4 @@ Reads this file and fails CI if any of these is missing from it: folder names in
 | 2026-10-22 | scaffold | NestJS 11 + Fastify project scaffolded: modular-monolith `src/` layout (§5) wired end-to-end (config, Prisma/Redis/BullMQ infra, global filter/interceptors/guards, Swagger, Socket.IO with Redis adapter, Terminus health checks); `prisma/schema.prisma` for the full §4 data model incl. new `TeamRole` enum; `scripts/check-instructions.ts` implementing §12.4; Dockerfile/railway.toml. All modules are empty placeholders — no business logic (match engine rules, auth flow, etc.) implemented yet. |
 | 2026-10-22 | redis-deferred | Flagged Redis as not stood up yet (§11.1); throttler temporarily falls back to in-memory storage (§9.5) instead of hanging requests when Redis is unreachable. AuthModule still unimplemented. |
 | 2026-10-22 | session-policy | Decided session lifetime ahead of implementing AuthModule: access token stays short (15 min), refresh token has **no TTL** — ends only via logout or reuse-detection (§9.5). Removed `JWT_REFRESH_TTL` (§11); `RefreshToken.expiresAt` is now nullable (§4). |
+| 2026-10-23 | auth-firebase | Implemented AuthModule: `POST /auth/firebase/verify` · `/auth/refresh` · `/auth/logout` (§7.2). OTP verification delegated to Firebase Phone Auth for now — backend only verifies the client's Firebase ID token via `firebase-admin` (`src/infra/firebase/`, new §5 entry); `OTP_PROVIDER`/`OTP_API_KEY` left wired but unused (§9.5 flag, §11 env). New env vars `FIREBASE_PROJECT_ID`/`FIREBASE_CLIENT_EMAIL`/`FIREBASE_PRIVATE_KEY` (§11). Refresh-token lookup mechanism documented (§9.5): JWT carries `jti` = `RefreshToken` row id for O(1) lookup, argon2 hash checked against that one row. `User.name` is now nullable (§4) — a new signup has a verified phone but no name until the client's profile-setup step completes via `PATCH /me` (now implemented, together with `GET /me`; upserts/claims the matching `Player` by phone — see §1.1). Added repositories (`UsersRepository`, `PlayersRepository`, `AuthRepository`) per the Controller→Service→Repository layering (§3.1, §9.4). First Prisma migration (`20261023050310_init`) applied. |

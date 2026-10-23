@@ -53,6 +53,19 @@ export class AppConfigService {
     return this.configService.get('OTP_API_KEY', { infer: true });
   }
 
+  get firebaseProjectId(): string {
+    return this.configService.get('FIREBASE_PROJECT_ID', { infer: true });
+  }
+
+  get firebaseClientEmail(): string {
+    return this.configService.get('FIREBASE_CLIENT_EMAIL', { infer: true });
+  }
+
+  /** Env stores the PEM with literal `\n` escapes — decode back to real newlines. */
+  get firebasePrivateKey(): string {
+    return this.configService.get('FIREBASE_PRIVATE_KEY', { infer: true }).replace(/\\n/g, '\n');
+  }
+
   get corsOrigins(): string[] {
     const raw = this.configService.get('CORS_ORIGINS', { infer: true });
     return raw

@@ -88,7 +88,9 @@ enum TeamRole {
 model User {
   id            String         @id @default(cuid(2))
   phone         String         @unique
-  name          String
+  // Nullable: a brand-new signup has a verified phone but no name yet — set by the client's
+  // profile-setup step (PATCH /me) right after their first OTP verification.
+  name          String?
   avatarUrl     String?
   player        Player?
   teams         Team[]

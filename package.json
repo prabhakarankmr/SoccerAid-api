@@ -55,6 +55,7 @@
     "dotenv": "18.0.8",
     "class-validator": "0.15.1",
     "fastify": "5.11.3",
+    "firebase-admin": "14.5.0",
     "ioredis": "6.0.0",
     "nestjs-pino": "5.3.1",
     "pino": "10.4.0",

@@ -64,6 +64,21 @@ export class EnvironmentVariables {
   @MinLength(1)
   OTP_API_KEY!: string;
 
+  // Firebase Admin — verifies the ID token the app gets from Firebase Phone Auth after the user
+  // enters the OTP. See §9.5 flag: this is how OTP verification is done for now, OTP_PROVIDER/
+  // OTP_API_KEY above are unused until that's revisited.
+  @IsString()
+  @MinLength(1)
+  FIREBASE_PROJECT_ID!: string;
+
+  @IsString()
+  @MinLength(1)
+  FIREBASE_CLIENT_EMAIL!: string;
+
+  @IsString()
+  @MinLength(1)
+  FIREBASE_PRIVATE_KEY!: string;
+
   @IsString()
   CORS_ORIGINS = '';
 
