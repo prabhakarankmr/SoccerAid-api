@@ -24,6 +24,10 @@ export class UsersService {
     return this.usersRepository.findById(id);
   }
 
+  findByUsername(username: string): Promise<User | null> {
+    return this.usersRepository.findByUsername(username);
+  }
+
   createByPhone(phone: string): Promise<User> {
     return this.usersRepository.create(phone);
   }

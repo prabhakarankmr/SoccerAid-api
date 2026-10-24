@@ -158,7 +158,13 @@ model Team {
   id             String           @id @default(cuid(2))
   name           String
   shortName      String
+  // Short human-friendly search code (e.g. "A3F9K2") — distinct from `id`, which is a long
+  // cuid not meant for a person to read aloud or type. Generated server-side on create,
+  // retried on collision (TeamsService); the QR code encodes this too, not `id`.
+  code           String           @unique
   logoUrl        String?
+  contactNumber  String?
+  place          String?
   ownerId        String
   owner          User             @relation(fields: [ownerId], references: [id])
   deletedAt      DateTime?

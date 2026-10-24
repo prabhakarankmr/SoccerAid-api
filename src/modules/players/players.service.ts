@@ -55,4 +55,17 @@ export class PlayersService {
   findByUserId(userId: string): Promise<Player | null> {
     return this.playersRepository.findByUserId(userId);
   }
+
+  findById(id: string): Promise<Player | null> {
+    return this.playersRepository.findById(id);
+  }
+
+  /** Captain/roster picker (teams.service) and any future player-search UI. */
+  search(query: string | undefined): Promise<Player[]> {
+    return this.playersRepository.search(query, 20);
+  }
+
+  createPlayer(displayName: string): Promise<Player> {
+    return this.playersRepository.createUnclaimed(displayName);
+  }
 }

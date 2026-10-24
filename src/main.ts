@@ -24,6 +24,10 @@ async function bootstrap(): Promise<void> {
   await app.register(fastifyHelmet);
   await app.register(fastifyCors, {
     origin: config.corsOrigins.length > 0 ? config.corsOrigins : false,
+    // @fastify/cors defaults `methods` to the literal string 'GET,HEAD,POST' — PATCH/PUT/
+    // DELETE requests (browser only; native doesn't enforce CORS) get silently blocked at
+    // the preflight without this, well before reaching any route handler.
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
   });
 
   app.setGlobalPrefix('api');
