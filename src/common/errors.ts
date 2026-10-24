@@ -18,6 +18,7 @@ export const ERROR_CODES = [
   'OTP_INVALID',
   'OTP_RATE_LIMITED',
   'TOURNAMENT_LOCKED',
+  'USERNAME_TAKEN',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

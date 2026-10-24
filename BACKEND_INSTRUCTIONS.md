@@ -143,9 +143,11 @@ enum MatchEventType  {
   PAUSE RESUME HALF_TIME SECOND_HALF_START FULL_TIME PENALTY_SHOOTOUT_KICK UNDO
 }
 
-model User          { id, phone @unique, name?, avatarUrl, player Player?, refreshTokens RefreshToken[] }
-// name is nullable: set at signup via Firebase (phone only), filled in by the client's
-// profile-setup step (PATCH /me) — see §9.5.
+model User          { id, phone @unique, name?, username? @unique, bio?, avatarUrl, player Player?, refreshTokens RefreshToken[] }
+// name/username/bio are nullable: set at signup via Firebase (phone only), filled in by the
+// client's profile-setup step (PATCH /me) — see §9.5. username's uniqueness is case-sensitive
+// at the DB level (no citext); UpdateMeDto's regex restricts it to lowercase so that doesn't
+// surface as a gotcha (no Alice/alice split).
 model Player        { id, displayName, phone? @unique, userId? @unique, claimedAt?, preferredPosition?, ... }
 model Team          { id, name, shortName, logoUrl, ownerId, members TeamMember[] }   // name NOT globally unique
 model TeamMember    { teamId, playerId, jerseyNo?, role TeamRole, @@unique([teamId, playerId]) }
@@ -444,7 +446,7 @@ POST /api/v1/matches/:id/events   { clientEventId, expectedSeq, type, side?, pla
 - Secrets only from env; `.env` never committed.
 
 ### 9.6 Error codes (extend here when adding)
-`VALIDATION_FAILED`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `MATCH_SEQ_CONFLICT`, `MATCH_NOT_LIVE`, `PLAYER_NOT_ON_PITCH`, `NOT_POSSESSOR`, `INVALID_STATUS_TRANSITION`, `LINEUP_INCOMPLETE`, `SUB_LIMIT_REACHED`, `NOTHING_TO_UNDO`, `OTP_INVALID`, `OTP_RATE_LIMITED`, `TOURNAMENT_LOCKED`.
+`VALIDATION_FAILED`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `MATCH_SEQ_CONFLICT`, `MATCH_NOT_LIVE`, `PLAYER_NOT_ON_PITCH`, `NOT_POSSESSOR`, `INVALID_STATUS_TRANSITION`, `LINEUP_INCOMPLETE`, `SUB_LIMIT_REACHED`, `NOTHING_TO_UNDO`, `OTP_INVALID`, `OTP_RATE_LIMITED`, `TOURNAMENT_LOCKED`, `USERNAME_TAKEN`.
 
 ### 9.7 Testing
 - Engine: table-driven unit tests per event type + full-match replay fixtures (`test/fixtures/matches/*.json`) asserting final stats.
@@ -527,3 +529,4 @@ Reads this file and fails CI if any of these is missing from it: folder names in
 | 2026-10-22 | session-policy | Decided session lifetime ahead of implementing AuthModule: access token stays short (15 min), refresh token has **no TTL** — ends only via logout or reuse-detection (§9.5). Removed `JWT_REFRESH_TTL` (§11); `RefreshToken.expiresAt` is now nullable (§4). |
 | 2026-10-23 | auth-firebase | Implemented AuthModule: `POST /auth/firebase/verify` · `/auth/refresh` · `/auth/logout` (§7.2). OTP verification delegated to Firebase Phone Auth for now — backend only verifies the client's Firebase ID token via `firebase-admin` (`src/infra/firebase/`, new §5 entry); `OTP_PROVIDER`/`OTP_API_KEY` left wired but unused (§9.5 flag, §11 env). New env vars `FIREBASE_PROJECT_ID`/`FIREBASE_CLIENT_EMAIL`/`FIREBASE_PRIVATE_KEY` (§11). Refresh-token lookup mechanism documented (§9.5): JWT carries `jti` = `RefreshToken` row id for O(1) lookup, argon2 hash checked against that one row. `User.name` is now nullable (§4) — a new signup has a verified phone but no name until the client's profile-setup step completes via `PATCH /me` (now implemented, together with `GET /me`; upserts/claims the matching `Player` by phone — see §1.1). Added repositories (`UsersRepository`, `PlayersRepository`, `AuthRepository`) per the Controller→Service→Repository layering (§3.1, §9.4). First Prisma migration (`20261023050310_init`) applied. |
 | 2026-10-23 | refresh-token-sign-fix | Fixed `POST /auth/firebase/verify` 500ing on every real (non-garbage) request — `issueTokenPair` signed the refresh token via `this.jwtService.sign(..., { expiresIn: undefined })` intending "no expiry," but `jsonwebtoken`'s validator rejects any *present* option key regardless of value (`"expiresIn" should be a number of seconds or string representing a timespan`). Switched to signing the refresh token with raw `jsonwebtoken` instead of `@nestjs/jwt`'s `JwtService` — detail added to §9.5. Verified live: a garbage token now correctly 401s with `OTP_INVALID` instead of 500ing, and `jwt.sign(payload, secret)` with no options object confirmed to omit `exp` entirely. |
+| 2026-10-24 | user-profile-fields | Added `username` (unique, nullable) and `bio` (nullable) to `User` (§4) via a hand-written migration (`20261024073451_add_user_username_bio`) — `prisma migrate dev` refused to run non-interactively here (the unique-constraint warning forces a confirmation prompt), so generated the SQL with `prisma migrate diff --from-config-datasource --to-schema=prisma/schema.prisma --script` and applied it with `prisma migrate deploy` instead; same approach if this comes up again. `PATCH /me` (`UpdateMeDto`) now requires `username` (regex `^[a-z0-9_]{3,20}$` — lowercase-only so the DB's case-sensitive unique constraint doesn't bite, §4) and accepts optional `bio`; `UsersService.updateMe` checks `findByUsername` before writing and throws new error code `USERNAME_TAKEN` (409, §9.6) if taken by a different user. `MeEntity`/`GET /me` now return both fields. |

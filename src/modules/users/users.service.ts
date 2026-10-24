@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 
+import { DomainException } from '../../common/errors';
 import { User } from '../../generated/prisma/client';
 import { PlayersService } from '../players/players.service';
 
@@ -42,6 +43,8 @@ export class UsersService {
       id: user.id,
       phone: user.phone,
       name: user.name,
+      username: user.username,
+      bio: user.bio,
       avatarUrl: user.avatarUrl,
       player: player
         ? {
@@ -56,9 +59,23 @@ export class UsersService {
   async updateMe(
     userId: string,
     phone: string,
-    input: { displayName: string; preferredPosition?: string },
+    input: { displayName: string; username: string; bio?: string; preferredPosition?: string },
   ): Promise<MeEntity> {
-    await this.usersRepository.updateName(userId, input.displayName);
+    const existing = await this.usersRepository.findByUsername(input.username);
+
+    if (existing && existing.id !== userId) {
+      throw new DomainException(
+        'USERNAME_TAKEN',
+        'That username is already taken',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    await this.usersRepository.updateProfile(userId, {
+      name: input.displayName,
+      username: input.username,
+      bio: input.bio,
+    });
     await this.playersService.upsertForUser({
       userId,
       phone,
