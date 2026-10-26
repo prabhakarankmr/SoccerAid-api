@@ -8,6 +8,7 @@ import { PlayerSummaryEntity } from '../players/entities/player-summary.entity';
 
 import { AddMemberDto } from './dto/add-member.dto';
 import { CreateTeamDto } from './dto/create-team.dto';
+import { FindByCodeDto } from './dto/find-by-code.dto';
 import { LookupMemberDto } from './dto/lookup-member.dto';
 import { SearchTeamsDto } from './dto/search-teams.dto';
 import { SetCaptainDto } from './dto/set-captain.dto';
@@ -57,6 +58,13 @@ export class TeamsController {
   @Get('lookup-member')
   lookupMember(@Query() query: LookupMemberDto): Promise<PlayerSummaryEntity | null> {
     return this.teamsService.findMemberCandidate(query.identifier);
+  }
+
+  /** Any team by its exact short code — not scoped to owned/opponent teams, backs QR scan /
+   * "search by code" in the match-setup team picker (the team might be neither yet). */
+  @Get('by-code')
+  findByCode(@Query() query: FindByCodeDto): Promise<TeamSummaryEntity | null> {
+    return this.teamsService.findByCode(query.code);
   }
 
   // Must come after the static routes above — otherwise `:id` would greedily match

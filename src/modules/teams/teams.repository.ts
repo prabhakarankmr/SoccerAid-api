@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
+import { toIndiaE164 } from '../../common/phone.util';
 import { TeamRole } from '../../generated/prisma/client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 
@@ -26,6 +27,13 @@ export class TeamsRepository {
     return this.prisma.team.findUnique({ where: { code } });
   }
 
+  // Any team, not scoped to the requester's own/opponent teams — backs the QR-scan / "search by
+  // code" path in the match-setup team picker, where the team being looked for might be neither
+  // (BACKEND_INSTRUCTIONS.md §7.2).
+  findByCodeWithCaptain(code: string) {
+    return this.prisma.team.findUnique({ where: { code }, include: CAPTAIN_INCLUDE });
+  }
+
   findById(id: string) {
     return this.prisma.team.findUnique({ where: { id }, include: CAPTAIN_INCLUDE });
   }
@@ -42,11 +50,13 @@ export class TeamsRepository {
     return team?.ownerId ?? null;
   }
 
+  /** No-op if `playerId` is already on the team, at whatever role (notably: adding the
+   * existing captain as a "player" must not demote them — `update: {}` leaves role alone). */
   async addMember(teamId: string, playerId: string, role: TeamRole): Promise<void> {
     await this.prisma.teamMember.upsert({
       where: { teamId_playerId: { teamId, playerId } },
       create: { teamId, playerId, role },
-      update: { role },
+      update: {},
     });
   }
 
@@ -170,11 +180,30 @@ export class TeamsRepository {
     });
   }
 
+  // Matches by name, exact code, or the team's captain's exact phone/username — the match-setup
+  // team picker searches all four the same way (BACKEND_INSTRUCTIONS.md §7.2); a non-captain
+  // roster player's phone/username is deliberately not matched here, only the one person a team
+  // is actually "found by" from the outside.
   private nameOrCodeFilter(query: string) {
+    const phone = toIndiaE164(query.trim());
+
     return {
       OR: [
         { name: { contains: query, mode: 'insensitive' as const } },
         { code: { equals: query.toUpperCase() } },
+        {
+          members: {
+            some: {
+              role: TeamRole.CAPTAIN,
+              player: {
+                OR: [
+                  ...(phone ? [{ phone }] : []),
+                  { user: { username: { equals: query.trim().toLowerCase() } } },
+                ],
+              },
+            },
+          },
+        },
       ],
     };
   }

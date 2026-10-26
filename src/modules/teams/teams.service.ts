@@ -3,6 +3,7 @@ import { randomInt } from 'node:crypto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 
 import { DomainException } from '../../common/errors';
+import { toIndiaE164 } from '../../common/phone.util';
 import { TeamRole } from '../../generated/prisma/client';
 import { PlayerSummaryEntity } from '../players/entities/player-summary.entity';
 import { PlayersService } from '../players/players.service';
@@ -17,9 +18,6 @@ import { TeamsRepository } from './teams.repository';
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const CODE_LENGTH = 6;
 const MAX_CODE_ATTEMPTS = 10;
-
-const INDIA_LOCAL_PHONE = /^[6-9]\d{9}$/;
-const INDIA_E164_PHONE = /^\+91[6-9]\d{9}$/;
 
 export interface CreateTeamInput {
   name: string;
@@ -37,6 +35,7 @@ interface TeamWithCaptainMember {
   logoUrl: string | null;
   contactNumber: string | null;
   place: string | null;
+  ownerId: string;
   members: { player: { id: string; displayName: string } }[];
 }
 
@@ -47,7 +46,8 @@ interface TeamWithRosterMembers {
   logoUrl: string | null;
   contactNumber: string | null;
   place: string | null;
-  members: { role: TeamRole; player: { id: string; displayName: string } }[];
+  ownerId: string;
+  members: { role: TeamRole; player: { id: string; displayName: string; userId: string | null } }[];
 }
 
 @Injectable()
@@ -100,6 +100,11 @@ export class TeamsService {
     return team ? this.toDetail(team) : null;
   }
 
+  async findByCode(code: string): Promise<TeamSummaryEntity | null> {
+    const team = await this.teamsRepository.findByCodeWithCaptain(code.trim().toUpperCase());
+    return team ? this.toSummary(team) : null;
+  }
+
   /**
    * Finds a real app User by phone (10-digit local, or full +91 E.164) or by username, and
    * returns their linked Player — not a fuzzy name search like `GET /players?q=` (that one
@@ -109,7 +114,7 @@ export class TeamsService {
    */
   async findMemberCandidate(identifier: string): Promise<PlayerSummaryEntity | null> {
     const trimmed = identifier.trim();
-    const phone = this.toIndiaE164(trimmed);
+    const phone = toIndiaE164(trimmed);
 
     const user = phone
       ? await this.usersService.findByPhone(phone)
@@ -214,18 +219,6 @@ export class TeamsService {
     return code;
   }
 
-  private toIndiaE164(value: string): string | null {
-    if (INDIA_LOCAL_PHONE.test(value)) {
-      return `+91${value}`;
-    }
-
-    if (INDIA_E164_PHONE.test(value)) {
-      return value;
-    }
-
-    return null;
-  }
-
   private toSummary(team: TeamWithCaptainMember): TeamSummaryEntity {
     const captainMember = team.members[0];
 
@@ -236,6 +229,7 @@ export class TeamsService {
       logoUrl: team.logoUrl,
       contactNumber: team.contactNumber,
       place: team.place,
+      ownerId: team.ownerId,
       captain: captainMember
         ? { id: captainMember.player.id, displayName: captainMember.player.displayName }
         : null,
@@ -244,9 +238,19 @@ export class TeamsService {
 
   private toDetail(team: TeamWithRosterMembers): TeamDetailEntity {
     const captainMember = team.members.find((member) => member.role === TeamRole.CAPTAIN);
-    const players: TeamRosterPlayerEntity[] = team.members
-      .filter((member) => member.role !== TeamRole.CAPTAIN)
-      .map((member) => ({ id: member.player.id, displayName: member.player.displayName }));
+    // Captain listed first, then the rest — captain is a roster member too, just like any
+    // other player, so they show up in Players by default instead of only in the details sheet.
+    const players: TeamRosterPlayerEntity[] = [...team.members]
+      .sort((a, b) => Number(b.role === TeamRole.CAPTAIN) - Number(a.role === TeamRole.CAPTAIN))
+      .map((member) => ({
+        id: member.player.id,
+        displayName: member.player.displayName,
+        isCaptain: member.role === TeamRole.CAPTAIN,
+        // No linked User — added as a name-only guest (POST /players), not found via
+        // GET /teams/lookup-member. The captain is always a real user (§9.5), so this only
+        // ever applies to regular roster players.
+        isGuest: member.player.userId === null,
+      }));
 
     return {
       id: team.id,
@@ -255,6 +259,7 @@ export class TeamsService {
       logoUrl: team.logoUrl,
       contactNumber: team.contactNumber,
       place: team.place,
+      ownerId: team.ownerId,
       captain: captainMember
         ? { id: captainMember.player.id, displayName: captainMember.player.displayName }
         : null,

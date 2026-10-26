@@ -6,9 +6,10 @@ export class CreateTeamDto {
   @MaxLength(50)
   name!: string;
 
-  // Chosen via GET/POST /players first (search existing, or create a new one by name) — see
-  // BACKEND_INSTRUCTIONS.md §5/§7. Not validated for existence here; an invalid id surfaces
-  // as a foreign-key error from the TeamMember insert.
+  // Resolved client-side via GET /teams/lookup-member first — a real app user's Player id,
+  // found by their exact phone/username (BACKEND_INSTRUCTIONS.md §7.2, §9.5). Not validated
+  // for existence here; an invalid id surfaces as a foreign-key error from the TeamMember
+  // insert.
   @IsString()
   @MinLength(1)
   captainPlayerId!: string;
