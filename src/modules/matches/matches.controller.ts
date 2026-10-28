@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpStatus, Param, Post, Put } from '@nestjs/common';
+import { Body, Controller, Get, HttpStatus, Param, Patch, Post, Put } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -7,6 +7,7 @@ import { AuthenticatedUser } from '../../common/types/authenticated-user';
 
 import { CreateMatchDto } from './dto/create-match.dto';
 import { SetLineupsDto } from './dto/set-lineups.dto';
+import { UpdateMatchDto } from './dto/update-match.dto';
 import { MatchDetailEntity } from './entities/match-detail.entity';
 import { MatchesService } from './matches.service';
 
@@ -32,6 +33,15 @@ export class MatchesController {
     }
 
     return match;
+  }
+
+  @Patch(':id')
+  updateMatch(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateMatchDto,
+  ): Promise<MatchDetailEntity> {
+    return this.matchesService.updateMatch(id, user.id, dto);
   }
 
   @Put(':id/lineups')

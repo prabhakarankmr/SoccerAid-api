@@ -85,6 +85,19 @@ export class MatchesRepository {
     return this.prisma.match.update({ where: { id: matchId }, data: { status } });
   }
 
+  async update(matchId: string, data: { halfDurationSec?: number }): Promise<MatchWithTeams> {
+    await this.prisma.match.update({ where: { id: matchId }, data });
+    // Re-select with the same shape as every other read here (team refs + lineups) rather than
+    // returning the bare `match.update()` result, which wouldn't have either.
+    const match = await this.findById(matchId);
+
+    if (!match) {
+      throw new Error('Match was updated but could not be reloaded');
+    }
+
+    return match;
+  }
+
   private includeOpts() {
     return {
       homeTeam: { select: TEAM_REF_SELECT },

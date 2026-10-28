@@ -6,10 +6,11 @@ export class CreateTeamDto {
   @MaxLength(50)
   name!: string;
 
-  // Resolved client-side via GET /teams/lookup-member first — a real app user's Player id,
-  // found by their exact phone/username (BACKEND_INSTRUCTIONS.md §7.2, §9.5). Not validated
-  // for existence here; an invalid id surfaces as a foreign-key error from the TeamMember
-  // insert.
+  // Resolved client-side first: either a real app user's Player id via GET /teams/lookup-member
+  // (exact phone/username), or a freshly created name-only guest Player via POST /players — a
+  // team that isn't on SoccerAid at all can still be recorded this way (BACKEND_INSTRUCTIONS.md
+  // §7.2, §9.5). Not validated for existence here either way; an invalid id surfaces as a
+  // foreign-key error from the TeamMember insert.
   @IsString()
   @MinLength(1)
   captainPlayerId!: string;

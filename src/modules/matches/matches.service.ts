@@ -6,6 +6,7 @@ import { getFormationsFor } from '../meta/formations.data';
 
 import { CreateMatchDto } from './dto/create-match.dto';
 import { LineupPlayerDto, SetLineupsDto } from './dto/set-lineups.dto';
+import { UpdateMatchDto } from './dto/update-match.dto';
 import { MatchDetailEntity } from './entities/match-detail.entity';
 import { LineupEntryInput, MatchesRepository, MatchWithTeams } from './matches.repository';
 
@@ -102,6 +103,41 @@ export class MatchesService {
     await this.matchesRepository.setStatus(matchId, MatchStatus.LINEUPS_SET);
 
     return this.getDetailOrThrow(matchId);
+  }
+
+  /** Owner-only, same as lineups — and same status restriction: the half length isn't
+   * something you change once a match is actually underway. */
+  async updateMatch(
+    matchId: string,
+    requesterId: string,
+    dto: UpdateMatchDto,
+  ): Promise<MatchDetailEntity> {
+    const match = await this.matchesRepository.findById(matchId);
+
+    if (!match) {
+      throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
+    }
+
+    if (requesterId !== match.homeTeam.ownerId && requesterId !== match.awayTeam.ownerId) {
+      throw new DomainException(
+        'FORBIDDEN',
+        'You must own one of the two teams to edit this match',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    if (match.status !== MatchStatus.SCHEDULED && match.status !== MatchStatus.LINEUPS_SET) {
+      throw new DomainException(
+        'INVALID_STATUS_TRANSITION',
+        'Match settings can only be changed before kickoff',
+      );
+    }
+
+    const updated = await this.matchesRepository.update(matchId, {
+      halfDurationSec: dto.halfDurationSec,
+    });
+
+    return this.toDetail(updated);
   }
 
   private async validateAndSetSide(

@@ -247,8 +247,8 @@ export class TeamsService {
         displayName: member.player.displayName,
         isCaptain: member.role === TeamRole.CAPTAIN,
         // No linked User — added as a name-only guest (POST /players), not found via
-        // GET /teams/lookup-member. The captain is always a real user (§9.5), so this only
-        // ever applies to regular roster players.
+        // GET /teams/lookup-member. Can be true for the captain too since 2026-10-27 — a
+        // guest captain lets a team that isn't on SoccerAid at all still be recorded (§9.5).
         isGuest: member.player.userId === null,
       }));
 
