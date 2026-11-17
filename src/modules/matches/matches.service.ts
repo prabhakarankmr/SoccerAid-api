@@ -4,6 +4,7 @@ import { DomainException } from '../../common/errors';
 import { MatchStatus, Side } from '../../generated/prisma/client';
 import { getFormationsFor } from '../meta/formations.data';
 
+import { AddTimeDto } from './dto/add-time.dto';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { RecordMatchEventDto } from './dto/record-event.dto';
 import { LineupPlayerDto, SetLineupsDto } from './dto/set-lineups.dto';
@@ -18,6 +19,18 @@ function extractAssistPlayerId(payload: unknown): string | null {
     typeof (payload as Record<string, unknown>).assistPlayerId === 'string'
   ) {
     return (payload as Record<string, unknown>).assistPlayerId as string;
+  }
+
+  return null;
+}
+
+function extractAddedSeconds(payload: unknown): number | null {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    typeof (payload as Record<string, unknown>).seconds === 'number'
+  ) {
+    return (payload as Record<string, unknown>).seconds as number;
   }
 
   return null;
@@ -76,11 +89,7 @@ export class MatchesService {
     requesterId: string,
     dto: SetLineupsDto,
   ): Promise<MatchDetailEntity> {
-    const match = await this.matchesRepository.findById(matchId);
-
-    if (!match) {
-      throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
-    }
+    const match = await this.findOrThrow(matchId);
 
     this.assertOwnsEitherTeam(match, requesterId, 'set its lineup');
 
@@ -119,11 +128,7 @@ export class MatchesService {
     requesterId: string,
     dto: UpdateMatchDto,
   ): Promise<MatchDetailEntity> {
-    const match = await this.matchesRepository.findById(matchId);
-
-    if (!match) {
-      throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
-    }
+    const match = await this.findOrThrow(matchId);
 
     this.assertOwnsEitherTeam(match, requesterId, 'edit this match');
 
@@ -145,11 +150,7 @@ export class MatchesService {
   // (§4's scorer-transfer model is still unused): anyone who owns either team can both set up
   // and score the match, same single-permission-tier approach the rest of this module uses.
   async startMatch(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
-    const match = await this.matchesRepository.findById(matchId);
-
-    if (!match) {
-      throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
-    }
+    const match = await this.findOrThrow(matchId);
 
     this.assertOwnsEitherTeam(match, requesterId, 'start this match');
 
@@ -161,17 +162,114 @@ export class MatchesService {
     return this.toDetail(updated);
   }
 
+  async pauseMatch(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
+    const match = await this.findOrThrow(matchId);
+    this.assertOwnsEitherTeam(match, requesterId, 'pause this match');
+
+    if (match.status !== MatchStatus.LIVE) {
+      throw new DomainException('INVALID_STATUS_TRANSITION', 'Only a live match can be paused');
+    }
+
+    const updated = await this.matchesRepository.pause(matchId, requesterId);
+    return this.toDetail(updated);
+  }
+
+  async resumeMatch(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
+    const match = await this.findOrThrow(matchId);
+    this.assertOwnsEitherTeam(match, requesterId, 'resume this match');
+
+    if (match.status !== MatchStatus.PAUSED) {
+      throw new DomainException('INVALID_STATUS_TRANSITION', 'Only a paused match can be resumed');
+    }
+
+    const updated = await this.matchesRepository.resume(matchId, requesterId);
+    return this.toDetail(updated);
+  }
+
+  // Stoppage time, added to whichever half is currently in progress — not knockout-style extra
+  // time (two periods after a draw), which this app doesn't model yet.
+  async addTime(matchId: string, requesterId: string, dto: AddTimeDto): Promise<MatchDetailEntity> {
+    const match = await this.findOrThrow(matchId);
+    this.assertOwnsEitherTeam(match, requesterId, 'add time to this match');
+
+    if (match.status !== MatchStatus.LIVE && match.status !== MatchStatus.PAUSED) {
+      throw new DomainException(
+        'INVALID_STATUS_TRANSITION',
+        'Time can only be added to a half in progress',
+      );
+    }
+
+    const updated = await this.matchesRepository.addTime(matchId, requesterId, dto.seconds);
+    return this.toDetail(updated);
+  }
+
+  // User-confirmed, not automatic (the clock is allowed to run past the nominal half length
+  // until this is actually tapped) — this screen just surfaces that time's up, it doesn't end
+  // the half on its own.
+  async endFirstHalf(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
+    const match = await this.findOrThrow(matchId);
+    this.assertOwnsEitherTeam(match, requesterId, 'end the first half');
+
+    const canEnd =
+      (match.status === MatchStatus.LIVE || match.status === MatchStatus.PAUSED) &&
+      match.state?.period === 'FIRST_HALF';
+
+    if (!canEnd) {
+      throw new DomainException(
+        'INVALID_STATUS_TRANSITION',
+        'Only the first half, in progress, can be ended',
+      );
+    }
+
+    const updated = await this.matchesRepository.halfTime(matchId, requesterId);
+    return this.toDetail(updated);
+  }
+
+  // Kickoff of the second half — same as the first, an explicit user action rather than
+  // anything automatic.
+  async startSecondHalf(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
+    const match = await this.findOrThrow(matchId);
+    this.assertOwnsEitherTeam(match, requesterId, 'start the second half');
+
+    if (match.status !== MatchStatus.HALF_TIME) {
+      throw new DomainException(
+        'INVALID_STATUS_TRANSITION',
+        'The second half can only start at half-time',
+      );
+    }
+
+    const updated = await this.matchesRepository.secondHalf(matchId, requesterId);
+    return this.toDetail(updated);
+  }
+
+  // Manual "End Match" — valid at any point once kicked off (mid first half, half-time, mid
+  // second half), not only after a completed second half. Always the final whistle for this
+  // scope: no separate ABANDONED/COMPLETED step, see matches.repository.ts's `end()`.
+  async endMatch(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
+    const match = await this.findOrThrow(matchId);
+    this.assertOwnsEitherTeam(match, requesterId, 'end this match');
+
+    const notYetStarted =
+      match.status === MatchStatus.SCHEDULED || match.status === MatchStatus.LINEUPS_SET;
+
+    if (notYetStarted || match.status === MatchStatus.FULL_TIME) {
+      throw new DomainException(
+        'INVALID_STATUS_TRANSITION',
+        'Only a match that has kicked off, and hasn’t already ended, can be ended',
+      );
+    }
+
+    const updated = await this.matchesRepository.end(matchId, requesterId);
+    return this.toDetail(updated);
+  }
+
   // Scoped to GOAL/SHOT_SAVED/FOUL for now (RecordMatchEventDto) — see that file's comment.
   async recordEvent(
     matchId: string,
     requesterId: string,
     dto: RecordMatchEventDto,
   ): Promise<MatchDetailEntity> {
-    const match = await this.matchesRepository.findById(matchId);
-
-    if (!match) {
-      throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
-    }
+    const match = await this.findOrThrow(matchId);
 
     this.assertOwnsEitherTeam(match, requesterId, 'record events for this match');
 
@@ -215,6 +313,16 @@ export class MatchesService {
     });
 
     return this.toDetail(updated);
+  }
+
+  private async findOrThrow(matchId: string): Promise<MatchWithTeams> {
+    const match = await this.matchesRepository.findById(matchId);
+
+    if (!match) {
+      throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
+    }
+
+    return match;
   }
 
   private assertOwnsEitherTeam(match: MatchWithTeams, requesterId: string, action: string): void {
@@ -350,6 +458,9 @@ export class MatchesService {
         awayScore: match.state.awayScore,
         clockStartedAt: match.state.clockStartedAt?.toISOString() ?? null,
         clockRunning: match.state.clockRunning,
+        elapsedSec: match.state.elapsedSec,
+        period: match.state.period,
+        addedTimeSec: match.state.addedTimeSec,
       },
       events: match.events.map((event): MatchEventEntity => ({
         id: event.id,
@@ -358,7 +469,9 @@ export class MatchesService {
         side: event.side,
         playerId: event.playerId,
         assistPlayerId: extractAssistPlayerId(event.payload),
+        addedSeconds: extractAddedSeconds(event.payload),
         matchClockSec: event.matchClockSec,
+        period: event.period,
         createdAt: event.createdAt.toISOString(),
       })),
     };

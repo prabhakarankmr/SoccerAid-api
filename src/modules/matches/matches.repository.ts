@@ -12,11 +12,19 @@ export interface TeamRefRow {
   ownerId: string;
 }
 
+// Mirrors the string literals `start()`/`pause()`/etc. below actually write — MatchState.period
+// and MatchEvent.period are a loose `String` column in the schema (§4), typed here instead of
+// left as bare strings so a typo can't silently desync the two.
+export type MatchPeriod = 'FIRST_HALF' | 'HALF_TIME' | 'SECOND_HALF' | 'FULL_TIME';
+
 export interface MatchStateRow {
   homeScore: number;
   awayScore: number;
   clockStartedAt: Date | null;
   clockRunning: boolean;
+  elapsedSec: number;
+  period: MatchPeriod;
+  addedTimeSec: number;
 }
 
 export interface MatchEventRow {
@@ -27,7 +35,24 @@ export interface MatchEventRow {
   playerId: string | null;
   payload: unknown;
   matchClockSec: number;
+  period: MatchPeriod | null;
   createdAt: Date;
+}
+
+// Elapsed seconds for the CURRENT period: banked `elapsedSec` plus however long the clock has
+// been running since `clockStartedAt`, or just the banked value while paused/stopped.
+function computeElapsedSec(state: {
+  clockRunning: boolean;
+  clockStartedAt: Date | null;
+  elapsedSec: number;
+}): number {
+  if (!state.clockRunning || !state.clockStartedAt) {
+    return state.elapsedSec;
+  }
+
+  return (
+    state.elapsedSec + Math.max(0, Math.floor((Date.now() - state.clockStartedAt.getTime()) / 1000))
+  );
 }
 
 export interface MatchWithTeams extends Match {
@@ -80,12 +105,20 @@ export interface CreateMatchInput {
 export class MatchesRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(data: CreateMatchInput): Promise<MatchWithTeams> {
-    return this.prisma.match.create({ data, include: this.includeOpts() });
+  // `period`/`addedTimeSec` cross from the DB's loose `String`/`Int` columns into our narrowed
+  // `MatchStateRow`/`MatchEventRow` shapes here — the same cast `loadWithState` does below,
+  // just at the two plain-read call sites instead of inside a locked transaction.
+  async create(data: CreateMatchInput): Promise<MatchWithTeams> {
+    const match = await this.prisma.match.create({ data, include: this.includeOpts() });
+    return match as MatchWithTeams;
   }
 
-  findById(id: string): Promise<MatchWithTeams | null> {
-    return this.prisma.match.findUnique({ where: { id }, include: this.includeOpts() });
+  async findById(id: string): Promise<MatchWithTeams | null> {
+    const match = await this.prisma.match.findUnique({
+      where: { id },
+      include: this.includeOpts(),
+    });
+    return match as MatchWithTeams | null;
   }
 
   // Reads the Team row directly (not via TeamsService) — same pattern teams.repository.ts
@@ -122,10 +155,10 @@ export class MatchesRepository {
     return this.findByIdOrThrow(matchId);
   }
 
-  // Kickoff: flips LINEUPS_SET → LIVE, starts the server-authoritative clock
+  // Kickoff (first half): flips LINEUPS_SET → LIVE, starts the server-authoritative clock
   // (`MatchState.clockStartedAt`), and opens the event log with a KICK_OFF row at seq 1.
-  // Locked (§3.2 `withMatchLock`) so a double-tap of "Start Match" can't race itself into
-  // creating two MatchState rows or two seq-1 events.
+  // Locked (§3.2 `withMatchLock`) so a double-tap of "Kick Off" can't race itself into creating
+  // two MatchState rows or two seq-1 events.
   async start(matchId: string, requesterId: string): Promise<MatchWithTeams> {
     await this.prisma.withMatchLock(matchId, async (tx) => {
       const match = await tx.match.findUniqueOrThrow({ where: { id: matchId } });
@@ -136,7 +169,14 @@ export class MatchesRepository {
           data: { status: MatchStatus.LIVE, lastSeq: 1 },
         });
         await tx.matchState.create({
-          data: { matchId, clockStartedAt: new Date(), clockRunning: true, period: 'LIVE' },
+          data: {
+            matchId,
+            clockStartedAt: new Date(),
+            clockRunning: true,
+            period: 'FIRST_HALF' satisfies MatchPeriod,
+            elapsedSec: 0,
+            addedTimeSec: 0,
+          },
         });
         await tx.matchEvent.create({
           data: {
@@ -145,10 +185,214 @@ export class MatchesRepository {
             clientEventId: `kickoff:${matchId}`,
             type: MatchEventType.KICK_OFF,
             matchClockSec: 0,
+            period: 'FIRST_HALF' satisfies MatchPeriod,
             createdById: requesterId,
           },
         });
       }
+    });
+
+    return this.findByIdOrThrow(matchId);
+  }
+
+  // LIVE → PAUSED: banks the current period's elapsed time and stops the clock.
+  async pause(matchId: string, requesterId: string): Promise<MatchWithTeams> {
+    await this.prisma.withMatchLock(matchId, async (tx) => {
+      const match = await this.loadWithState(tx, matchId);
+      const elapsedSec = computeElapsedSec(match.state);
+      const seq = match.lastSeq + 1;
+
+      await tx.matchState.update({
+        where: { matchId },
+        data: { elapsedSec, clockRunning: false, clockStartedAt: null },
+      });
+      await tx.match.update({
+        where: { id: matchId },
+        data: { status: MatchStatus.PAUSED, lastSeq: seq },
+      });
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          seq,
+          clientEventId: `pause:${matchId}:${String(seq)}`,
+          type: MatchEventType.PAUSE,
+          matchClockSec: elapsedSec,
+          period: match.state.period,
+          createdById: requesterId,
+        },
+      });
+    });
+
+    return this.findByIdOrThrow(matchId);
+  }
+
+  // PAUSED → LIVE: resumes the clock from wherever it was banked, same period.
+  async resume(matchId: string, requesterId: string): Promise<MatchWithTeams> {
+    await this.prisma.withMatchLock(matchId, async (tx) => {
+      const match = await this.loadWithState(tx, matchId);
+      const seq = match.lastSeq + 1;
+
+      await tx.matchState.update({
+        where: { matchId },
+        data: { clockRunning: true, clockStartedAt: new Date() },
+      });
+      await tx.match.update({
+        where: { id: matchId },
+        data: { status: MatchStatus.LIVE, lastSeq: seq },
+      });
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          seq,
+          clientEventId: `resume:${matchId}:${String(seq)}`,
+          type: MatchEventType.RESUME,
+          matchClockSec: match.state.elapsedSec,
+          period: match.state.period,
+          createdById: requesterId,
+        },
+      });
+    });
+
+    return this.findByIdOrThrow(matchId);
+  }
+
+  // Stoppage/added time for the CURRENT half — extends its effective limit
+  // (`halfDurationSec + addedTimeSec`) without touching the running clock itself.
+  async addTime(matchId: string, requesterId: string, seconds: number): Promise<MatchWithTeams> {
+    await this.prisma.withMatchLock(matchId, async (tx) => {
+      const match = await this.loadWithState(tx, matchId);
+      const elapsedSec = computeElapsedSec(match.state);
+      const seq = match.lastSeq + 1;
+
+      await tx.matchState.update({
+        where: { matchId },
+        data: { addedTimeSec: { increment: seconds } },
+      });
+      await tx.match.update({ where: { id: matchId }, data: { lastSeq: seq } });
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          seq,
+          clientEventId: `add-time:${matchId}:${String(seq)}`,
+          type: MatchEventType.ADD_TIME,
+          payload: { seconds },
+          matchClockSec: elapsedSec,
+          period: match.state.period,
+          createdById: requesterId,
+        },
+      });
+    });
+
+    return this.findByIdOrThrow(matchId);
+  }
+
+  // Confirmed end of the first half (user-triggered, not automatic — the clock can run past
+  // the nominal limit until this is tapped). Resets elapsed/added time for the second half.
+  async halfTime(matchId: string, requesterId: string): Promise<MatchWithTeams> {
+    await this.prisma.withMatchLock(matchId, async (tx) => {
+      const match = await this.loadWithState(tx, matchId);
+      const elapsedSec = computeElapsedSec(match.state);
+      const seq = match.lastSeq + 1;
+
+      await tx.matchState.update({
+        where: { matchId },
+        data: {
+          period: 'HALF_TIME' satisfies MatchPeriod,
+          clockRunning: false,
+          clockStartedAt: null,
+          elapsedSec: 0,
+          addedTimeSec: 0,
+        },
+      });
+      await tx.match.update({
+        where: { id: matchId },
+        data: { status: MatchStatus.HALF_TIME, lastSeq: seq },
+      });
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          seq,
+          clientEventId: `half-time:${matchId}:${String(seq)}`,
+          type: MatchEventType.HALF_TIME,
+          matchClockSec: elapsedSec,
+          period: 'FIRST_HALF' satisfies MatchPeriod,
+          createdById: requesterId,
+        },
+      });
+    });
+
+    return this.findByIdOrThrow(matchId);
+  }
+
+  // Kickoff of the second half — explicit, same as the first (user-selected, not automatic).
+  async secondHalf(matchId: string, requesterId: string): Promise<MatchWithTeams> {
+    await this.prisma.withMatchLock(matchId, async (tx) => {
+      const match = await tx.match.findUniqueOrThrow({ where: { id: matchId } });
+      const seq = match.lastSeq + 1;
+
+      await tx.matchState.update({
+        where: { matchId },
+        data: {
+          period: 'SECOND_HALF' satisfies MatchPeriod,
+          clockRunning: true,
+          clockStartedAt: new Date(),
+          elapsedSec: 0,
+        },
+      });
+      await tx.match.update({
+        where: { id: matchId },
+        data: { status: MatchStatus.LIVE, lastSeq: seq },
+      });
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          seq,
+          clientEventId: `second-half:${matchId}:${String(seq)}`,
+          type: MatchEventType.SECOND_HALF_START,
+          matchClockSec: 0,
+          period: 'SECOND_HALF' satisfies MatchPeriod,
+          createdById: requesterId,
+        },
+      });
+    });
+
+    return this.findByIdOrThrow(matchId);
+  }
+
+  // Manual "End Match" — valid at any live-ish point (mid first half, half-time, mid second
+  // half), not only after a full second half. Always the final whistle: there's no separate
+  // ABANDONED/COMPLETED step for this scope (§7.2) — one end-state covers both "played out
+  // the full second half" and "stopped early."
+  async end(matchId: string, requesterId: string): Promise<MatchWithTeams> {
+    await this.prisma.withMatchLock(matchId, async (tx) => {
+      const match = await this.loadWithState(tx, matchId);
+      const elapsedSec = computeElapsedSec(match.state);
+      const seq = match.lastSeq + 1;
+
+      await tx.matchState.update({
+        where: { matchId },
+        data: {
+          period: 'FULL_TIME' satisfies MatchPeriod,
+          clockRunning: false,
+          clockStartedAt: null,
+          elapsedSec,
+        },
+      });
+      await tx.match.update({
+        where: { id: matchId },
+        data: { status: MatchStatus.FULL_TIME, lastSeq: seq },
+      });
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          seq,
+          clientEventId: `full-time:${matchId}:${String(seq)}`,
+          type: MatchEventType.FULL_TIME,
+          matchClockSec: elapsedSec,
+          period: match.state.period,
+          createdById: requesterId,
+        },
+      });
     });
 
     return this.findByIdOrThrow(matchId);
@@ -178,20 +422,9 @@ export class MatchesRepository {
         return;
       }
 
-      const match = await tx.match.findUniqueOrThrow({
-        where: { id: matchId },
-        include: { state: { select: { clockStartedAt: true } } },
-      });
-
-      if (!match.state?.clockStartedAt) {
-        throw new Error('Match is live but has no running clock — MatchState row missing');
-      }
-
+      const match = await this.loadWithState(tx, matchId);
       const seq = match.lastSeq + 1;
-      const matchClockSec = Math.max(
-        0,
-        Math.floor((Date.now() - match.state.clockStartedAt.getTime()) / 1000),
-      );
+      const matchClockSec = computeElapsedSec(match.state);
 
       await tx.matchEvent.create({
         data: {
@@ -203,6 +436,7 @@ export class MatchesRepository {
           playerId: input.playerId,
           payload: input.assistPlayerId ? { assistPlayerId: input.assistPlayerId } : undefined,
           matchClockSec,
+          period: match.state.period,
           createdById: input.createdById,
         },
       });
@@ -268,6 +502,35 @@ export class MatchesRepository {
     return match;
   }
 
+  // Shared by every clock transition (pause/resume/addTime/halfTime/end) — all of them need
+  // the match plus its current MatchState, and all require that state to actually exist
+  // (can't happen once LIVE, since `start()` always creates it in the same transaction that
+  // flips status to LIVE). `period` is narrowed from the DB's loose `String` column here, in
+  // one place, rather than at every call site.
+  private async loadWithState(tx: Tx, matchId: string): Promise<Match & { state: MatchStateRow }> {
+    const match = await tx.match.findUniqueOrThrow({
+      where: { id: matchId },
+      include: { state: true },
+    });
+
+    if (!match.state) {
+      throw new Error('Match has no MatchState row — expected one once LIVE');
+    }
+
+    return {
+      ...match,
+      state: {
+        homeScore: match.state.homeScore,
+        awayScore: match.state.awayScore,
+        clockStartedAt: match.state.clockStartedAt,
+        clockRunning: match.state.clockRunning,
+        elapsedSec: match.state.elapsedSec,
+        period: match.state.period as MatchPeriod,
+        addedTimeSec: match.state.addedTimeSec,
+      },
+    };
+  }
+
   private includeOpts() {
     return {
       homeTeam: { select: TEAM_REF_SELECT },
@@ -287,6 +550,9 @@ export class MatchesRepository {
           awayScore: true,
           clockStartedAt: true,
           clockRunning: true,
+          elapsedSec: true,
+          period: true,
+          addedTimeSec: true,
         },
       },
       events: {
@@ -297,6 +563,7 @@ export class MatchesRepository {
           type: true,
           side: true,
           playerId: true,
+          period: true,
           payload: true,
           matchClockSec: true,
           createdAt: true,

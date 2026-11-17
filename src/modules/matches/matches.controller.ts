@@ -5,6 +5,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DomainException } from '../../common/errors';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 
+import { AddTimeDto } from './dto/add-time.dto';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { RecordMatchEventDto } from './dto/record-event.dto';
 import { SetLineupsDto } from './dto/set-lineups.dto';
@@ -69,5 +70,54 @@ export class MatchesController {
     @Body() dto: RecordMatchEventDto,
   ): Promise<MatchDetailEntity> {
     return this.matchesService.recordEvent(id, user.id, dto);
+  }
+
+  @Post(':id/pause')
+  pauseMatch(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<MatchDetailEntity> {
+    return this.matchesService.pauseMatch(id, user.id);
+  }
+
+  @Post(':id/resume')
+  resumeMatch(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<MatchDetailEntity> {
+    return this.matchesService.resumeMatch(id, user.id);
+  }
+
+  @Post(':id/add-time')
+  addTime(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: AddTimeDto,
+  ): Promise<MatchDetailEntity> {
+    return this.matchesService.addTime(id, user.id, dto);
+  }
+
+  @Post(':id/half-time')
+  endFirstHalf(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<MatchDetailEntity> {
+    return this.matchesService.endFirstHalf(id, user.id);
+  }
+
+  @Post(':id/second-half')
+  startSecondHalf(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<MatchDetailEntity> {
+    return this.matchesService.startSecondHalf(id, user.id);
+  }
+
+  @Post(':id/end')
+  endMatch(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<MatchDetailEntity> {
+    return this.matchesService.endMatch(id, user.id);
   }
 }

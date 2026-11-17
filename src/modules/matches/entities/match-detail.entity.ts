@@ -1,4 +1,5 @@
 import { MatchEventType, MatchStatus } from '../../../generated/prisma/client';
+import { MatchPeriod } from '../matches.repository';
 
 export interface MatchTeamRefEntity {
   id: string;
@@ -20,6 +21,13 @@ export interface MatchStateEntity {
   awayScore: number;
   clockStartedAt: string | null;
   clockRunning: boolean;
+  // Banked seconds for the CURRENT period — combine with clockRunning/clockStartedAt client-side
+  // the same way matches.repository.ts's computeElapsedSec does, to get the live display value.
+  elapsedSec: number;
+  period: MatchPeriod;
+  // Stoppage time (seconds) added to the CURRENT half — the half's effective limit is
+  // `halfDurationSec + addedTimeSec`.
+  addedTimeSec: number;
 }
 
 export interface MatchEventEntity {
@@ -31,7 +39,12 @@ export interface MatchEventEntity {
   // Flattened out of MatchEvent.payload (`{ assistPlayerId }`) for the client's convenience —
   // only ever set on a GOAL event.
   assistPlayerId: string | null;
+  // Flattened out of MatchEvent.payload (`{ seconds }`) — only ever set on an ADD_TIME event.
+  addedSeconds: number | null;
   matchClockSec: number;
+  // Which half/period this event happened in (snapshotted at record time, §4) — null only for
+  // historical rows that predate this column.
+  period: MatchPeriod | null;
   createdAt: string;
 }
 

@@ -68,6 +68,7 @@ enum MatchEventType {
   POSSESSION_SET
   PAUSE
   RESUME
+  ADD_TIME
   HALF_TIME
   SECOND_HALF_START
   FULL_TIME
@@ -381,6 +382,11 @@ model MatchEvent {
   toPlayerId    String?
   payload       Json?
   matchClockSec Int
+  // Snapshot of MatchState.period at the moment this event was recorded (e.g. "FIRST_HALF") —
+  // kept on the event itself, not just read off the current MatchState, so a goal scored in
+  // the first half still reads "H1" in the commentary feed after the match has since moved
+  // into the second half. Nullable only because historical rows predate this column.
+  period        String?
   voidedBySeq   Int?
   createdById   String
   createdBy     User           @relation("MatchEventCreatedBy", fields: [createdById], references: [id])
@@ -402,8 +408,14 @@ model MatchState {
   possessionSide   Side?
   clockRunning     Boolean   @default(false)
   clockStartedAt   DateTime?
+  // Banked elapsed seconds for the CURRENT period only (resets to 0 at kickoff of each half) —
+  // the live elapsed time while running is `elapsedSec + (now - clockStartedAt)`; while paused
+  // or between halves, elapsedSec alone is the frozen display value.
   elapsedSec       Int       @default(0)
   period           String    @default("PRE")
+  // Stoppage/added time (seconds) for the CURRENT half only — reset to 0 at the start of each
+  // half. The half's effective limit is `Match.halfDurationSec + addedTimeSec`.
+  addedTimeSec     Int       @default(0)
   possessionMsHome BigInt    @default(0)
   possessionMsAway BigInt    @default(0)
   updatedAt        DateTime  @updatedAt
