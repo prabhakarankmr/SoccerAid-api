@@ -18,7 +18,6 @@ import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 import { LeaderboardsModule } from './modules/leaderboards/leaderboards.module';
 import { LiveModule } from './modules/live/live.module';
-import { MatchEventsModule } from './modules/match-events/match-events.module';
 import { MatchesModule } from './modules/matches/matches.module';
 import { MetaModule } from './modules/meta/meta.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -64,7 +63,6 @@ import { UsersModule } from './modules/users/users.module';
     PlayersModule,
     TeamsModule,
     MatchesModule,
-    MatchEventsModule,
     LiveModule,
     TournamentsModule,
     LeaderboardsModule,

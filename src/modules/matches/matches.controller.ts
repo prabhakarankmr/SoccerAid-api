@@ -6,6 +6,7 @@ import { DomainException } from '../../common/errors';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 
 import { CreateMatchDto } from './dto/create-match.dto';
+import { RecordMatchEventDto } from './dto/record-event.dto';
 import { SetLineupsDto } from './dto/set-lineups.dto';
 import { UpdateMatchDto } from './dto/update-match.dto';
 import { MatchDetailEntity } from './entities/match-detail.entity';
@@ -51,5 +52,22 @@ export class MatchesController {
     @Body() dto: SetLineupsDto,
   ): Promise<MatchDetailEntity> {
     return this.matchesService.setLineups(id, user.id, dto);
+  }
+
+  @Post(':id/start')
+  startMatch(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<MatchDetailEntity> {
+    return this.matchesService.startMatch(id, user.id);
+  }
+
+  @Post(':id/events')
+  recordEvent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: RecordMatchEventDto,
+  ): Promise<MatchDetailEntity> {
+    return this.matchesService.recordEvent(id, user.id, dto);
   }
 }

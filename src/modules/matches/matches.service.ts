@@ -5,10 +5,23 @@ import { MatchStatus, Side } from '../../generated/prisma/client';
 import { getFormationsFor } from '../meta/formations.data';
 
 import { CreateMatchDto } from './dto/create-match.dto';
+import { RecordMatchEventDto } from './dto/record-event.dto';
 import { LineupPlayerDto, SetLineupsDto } from './dto/set-lineups.dto';
 import { UpdateMatchDto } from './dto/update-match.dto';
-import { MatchDetailEntity } from './entities/match-detail.entity';
+import { MatchDetailEntity, MatchEventEntity } from './entities/match-detail.entity';
 import { LineupEntryInput, MatchesRepository, MatchWithTeams } from './matches.repository';
+
+function extractAssistPlayerId(payload: unknown): string | null {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    typeof (payload as Record<string, unknown>).assistPlayerId === 'string'
+  ) {
+    return (payload as Record<string, unknown>).assistPlayerId as string;
+  }
+
+  return null;
+}
 
 @Injectable()
 export class MatchesService {
@@ -69,13 +82,7 @@ export class MatchesService {
       throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
     }
 
-    if (requesterId !== match.homeTeam.ownerId && requesterId !== match.awayTeam.ownerId) {
-      throw new DomainException(
-        'FORBIDDEN',
-        'You must own one of the two teams to set its lineup',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    this.assertOwnsEitherTeam(match, requesterId, 'set its lineup');
 
     if (match.status !== MatchStatus.SCHEDULED && match.status !== MatchStatus.LINEUPS_SET) {
       throw new DomainException(
@@ -118,13 +125,7 @@ export class MatchesService {
       throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
     }
 
-    if (requesterId !== match.homeTeam.ownerId && requesterId !== match.awayTeam.ownerId) {
-      throw new DomainException(
-        'FORBIDDEN',
-        'You must own one of the two teams to edit this match',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    this.assertOwnsEitherTeam(match, requesterId, 'edit this match');
 
     if (match.status !== MatchStatus.SCHEDULED && match.status !== MatchStatus.LINEUPS_SET) {
       throw new DomainException(
@@ -138,6 +139,92 @@ export class MatchesService {
     });
 
     return this.toDetail(updated);
+  }
+
+  // Kickoff — owner-only, same as lineups/settings. No MatchScorer row is created here yet
+  // (§4's scorer-transfer model is still unused): anyone who owns either team can both set up
+  // and score the match, same single-permission-tier approach the rest of this module uses.
+  async startMatch(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
+    const match = await this.matchesRepository.findById(matchId);
+
+    if (!match) {
+      throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
+    }
+
+    this.assertOwnsEitherTeam(match, requesterId, 'start this match');
+
+    if (match.status !== MatchStatus.LINEUPS_SET) {
+      throw new DomainException('INVALID_STATUS_TRANSITION', 'Lineups must be set before kickoff');
+    }
+
+    const updated = await this.matchesRepository.start(matchId, requesterId);
+    return this.toDetail(updated);
+  }
+
+  // Scoped to GOAL/SHOT_SAVED/FOUL for now (RecordMatchEventDto) — see that file's comment.
+  async recordEvent(
+    matchId: string,
+    requesterId: string,
+    dto: RecordMatchEventDto,
+  ): Promise<MatchDetailEntity> {
+    const match = await this.matchesRepository.findById(matchId);
+
+    if (!match) {
+      throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
+    }
+
+    this.assertOwnsEitherTeam(match, requesterId, 'record events for this match');
+
+    if (match.status !== MatchStatus.LIVE) {
+      throw new DomainException('MATCH_NOT_LIVE', 'The match must be live to record events');
+    }
+
+    const isStarterOnSide = (playerId: string) =>
+      match.lineups.some(
+        (lineup) => lineup.playerId === playerId && lineup.side === dto.side && lineup.isStarter,
+      );
+
+    if (!isStarterOnSide(dto.playerId)) {
+      throw new DomainException('PLAYER_NOT_ON_PITCH', 'That player is not a starter on that side');
+    }
+
+    if (dto.assistPlayerId) {
+      if (dto.assistPlayerId === dto.playerId) {
+        throw new DomainException('VALIDATION_FAILED', 'A player cannot assist their own goal');
+      }
+
+      if (!isStarterOnSide(dto.assistPlayerId)) {
+        throw new DomainException(
+          'PLAYER_NOT_ON_PITCH',
+          'The assisting player is not a starter on that side',
+        );
+      }
+    }
+
+    // seq and matchClockSec are deliberately not computed here — the repository recomputes
+    // both from inside its per-match advisory lock (§3.2 `withMatchLock`) so two concurrent
+    // requests can't race each other onto the same seq using a value read before either
+    // acquired the lock.
+    const updated = await this.matchesRepository.recordEvent(matchId, {
+      clientEventId: dto.clientEventId,
+      type: dto.type,
+      side: dto.side,
+      playerId: dto.playerId,
+      assistPlayerId: dto.assistPlayerId ?? null,
+      createdById: requesterId,
+    });
+
+    return this.toDetail(updated);
+  }
+
+  private assertOwnsEitherTeam(match: MatchWithTeams, requesterId: string, action: string): void {
+    if (requesterId !== match.homeTeam.ownerId && requesterId !== match.awayTeam.ownerId) {
+      throw new DomainException(
+        'FORBIDDEN',
+        `You must own one of the two teams to ${action}`,
+        HttpStatus.FORBIDDEN,
+      );
+    }
   }
 
   private async validateAndSetSide(
@@ -257,6 +344,22 @@ export class MatchesService {
         isStarter: lineup.isStarter,
         isGoalkeeper: lineup.isGoalkeeper,
         slotIndex: lineup.slotIndex,
+      })),
+      state: match.state && {
+        homeScore: match.state.homeScore,
+        awayScore: match.state.awayScore,
+        clockStartedAt: match.state.clockStartedAt?.toISOString() ?? null,
+        clockRunning: match.state.clockRunning,
+      },
+      events: match.events.map((event): MatchEventEntity => ({
+        id: event.id,
+        seq: event.seq,
+        type: event.type,
+        side: event.side,
+        playerId: event.playerId,
+        assistPlayerId: extractAssistPlayerId(event.payload),
+        matchClockSec: event.matchClockSec,
+        createdAt: event.createdAt.toISOString(),
       })),
     };
   }

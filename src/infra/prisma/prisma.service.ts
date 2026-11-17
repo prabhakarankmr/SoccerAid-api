@@ -4,7 +4,9 @@ import { PrismaNeon } from '@prisma/adapter-neon';
 import { AppConfigService } from '../../config/app-config.service';
 import { Prisma, PrismaClient } from '../../generated/prisma/client';
 
-type Tx = Omit<
+// Exported so callers of `withMatchLock` can type a locked-transaction helper method's `tx`
+// parameter (e.g. matches.repository.ts) instead of only being able to inline the callback.
+export type Tx = Omit<
   PrismaClient,
   '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
 >;
