@@ -14,6 +14,17 @@ import { MatchDetailEntity, MatchEventEntity } from './entities/match-detail.ent
 import { MatchSummaryEntity } from './entities/match-summary.entity';
 import { LineupEntryInput, MatchesRepository, MatchWithTeams } from './matches.repository';
 
+// Lineups/settings are editable at any point up to the final whistle (user call, 2026-11-17:
+// "it should allow to set up match even when its live") — there's no substitution flow in live
+// scoring yet (recordEvent only checks a player is already a starter, it never changes who's on
+// the pitch), so this screen is the only way to fix a mistake or swap a player mid-match. Only
+// blocked once the match is actually over.
+const FINISHED_MATCH_STATUSES: readonly MatchStatus[] = [
+  MatchStatus.FULL_TIME,
+  MatchStatus.COMPLETED,
+  MatchStatus.ABANDONED,
+];
+
 function extractAssistPlayerId(payload: unknown): string | null {
   if (
     payload &&
@@ -119,10 +130,10 @@ export class MatchesService {
 
     this.assertOwnsEitherTeam(match, requesterId, 'set its lineup');
 
-    if (match.status !== MatchStatus.SCHEDULED && match.status !== MatchStatus.LINEUPS_SET) {
+    if (FINISHED_MATCH_STATUSES.includes(match.status)) {
       throw new DomainException(
         'INVALID_STATUS_TRANSITION',
-        'Lineups can only be set before kickoff',
+        'Lineups cannot be changed once the match has ended',
       );
     }
 
@@ -142,13 +153,18 @@ export class MatchesService {
 
     await this.validateAndSetSide(match, Side.HOME, match.homeTeamId, dto.home);
     await this.validateAndSetSide(match, Side.AWAY, match.awayTeamId, dto.away);
-    await this.matchesRepository.setStatus(matchId, MatchStatus.LINEUPS_SET);
+
+    // Only the initial setup actually advances status (SCHEDULED → LINEUPS_SET) — resubmitting
+    // the lineup mid-match (LIVE/PAUSED/HALF_TIME/…) edits the roster in place without touching
+    // status; there's no "un-kickoff" here.
+    if (match.status === MatchStatus.SCHEDULED) {
+      await this.matchesRepository.setStatus(matchId, MatchStatus.LINEUPS_SET);
+    }
 
     return this.getDetailOrThrow(matchId, requesterId);
   }
 
-  /** Owner-only, same as lineups — and same status restriction: the half length isn't
-   * something you change once a match is actually underway. */
+  /** Owner-only, same as lineups — and the same "editable until the final whistle" rule. */
   async updateMatch(
     matchId: string,
     requesterId: string,
@@ -158,10 +174,10 @@ export class MatchesService {
 
     this.assertOwnsEitherTeam(match, requesterId, 'edit this match');
 
-    if (match.status !== MatchStatus.SCHEDULED && match.status !== MatchStatus.LINEUPS_SET) {
+    if (FINISHED_MATCH_STATUSES.includes(match.status)) {
       throw new DomainException(
         'INVALID_STATUS_TRANSITION',
-        'Match settings can only be changed before kickoff',
+        'Match settings cannot be changed once the match has ended',
       );
     }
 
