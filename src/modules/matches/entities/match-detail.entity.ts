@@ -64,4 +64,9 @@ export interface MatchDetailEntity {
   state: MatchStateEntity | null;
   // Ascending by seq (chronological) — oldest first, same order as the underlying log.
   events: MatchEventEntity[];
+  // Whether the requester owns either team — any authenticated user can GET a match (public
+  // spectating, §1 Product Overview), but only this lets the frontend show scoring controls
+  // instead of a read-only viewer. Computed here rather than exposing homeTeam/awayTeam's raw
+  // ownerId, which every other MatchTeamRefEntity read deliberately leaves out.
+  canScore: boolean;
 }

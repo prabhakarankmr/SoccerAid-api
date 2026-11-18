@@ -68,4 +68,23 @@ export class PlayersService {
   createPlayer(displayName: string): Promise<Player> {
     return this.playersRepository.createUnclaimed(displayName);
   }
+
+  // Lifetime totals across every match this player appears in (§7.2 `GET /players/:id/stats`)
+  // — scope is "ALL" only for now, no per-tournament breakdown yet (the docs' planned `?scope=`
+  // query param).
+  async getStats(playerId: string): Promise<{
+    matchesPlayed: number;
+    goals: number;
+    assists: number;
+    saves: number;
+    fouls: number;
+  } | null> {
+    const player = await this.playersRepository.findById(playerId);
+
+    if (!player) {
+      return null;
+    }
+
+    return this.playersRepository.getMatchStatsTotals(playerId);
+  }
 }

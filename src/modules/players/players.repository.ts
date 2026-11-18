@@ -51,4 +51,35 @@ export class PlayersRepository {
   ): Promise<Player> {
     return this.prisma.player.update({ where: { id }, data });
   }
+
+  // Reads PlayerMatchStat directly (not via MatchesService) — same module-boundary pattern as
+  // teams.repository.ts reading Player, matches.repository.ts reading Team: a repository
+  // traversing another module's Prisma model via a relation is fine, calling that module's
+  // *service* is what's off-limits (BACKEND_INSTRUCTIONS.md module boundary rule). Computed
+  // on the fly from the per-match rows rather than maintaining PlayerCareerStat (§4, still
+  // unused) — a GROUP BY is simple and always consistent; revisit if this needs to be fast
+  // across a huge match history.
+  async getMatchStatsTotals(playerId: string): Promise<{
+    matchesPlayed: number;
+    goals: number;
+    assists: number;
+    saves: number;
+    fouls: number;
+  }> {
+    const [aggregate, matchesPlayed] = await Promise.all([
+      this.prisma.playerMatchStat.aggregate({
+        where: { playerId },
+        _sum: { goals: true, assists: true, saves: true, fouls: true },
+      }),
+      this.prisma.playerMatchStat.count({ where: { playerId } }),
+    ]);
+
+    return {
+      matchesPlayed,
+      goals: aggregate._sum.goals ?? 0,
+      assists: aggregate._sum.assists ?? 0,
+      saves: aggregate._sum.saves ?? 0,
+      fouls: aggregate._sum.fouls ?? 0,
+    };
+  }
 }

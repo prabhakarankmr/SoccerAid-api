@@ -1,8 +1,11 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpStatus, Param, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+
+import { DomainException } from '../../common/errors';
 
 import { CreatePlayerDto } from './dto/create-player.dto';
 import { SearchPlayersDto } from './dto/search-players.dto';
+import { PlayerStatsEntity } from './entities/player-stats.entity';
 import { PlayerSummaryEntity } from './entities/player-summary.entity';
 import { PlayersService } from './players.service';
 
@@ -31,5 +34,16 @@ export class PlayersController {
       phone: player.phone,
       preferredPosition: player.preferredPosition,
     };
+  }
+
+  @Get(':id/stats')
+  async getStats(@Param('id') id: string): Promise<PlayerStatsEntity> {
+    const stats = await this.playersService.getStats(id);
+
+    if (!stats) {
+      throw new DomainException('NOT_FOUND', 'Player not found', HttpStatus.NOT_FOUND);
+    }
+
+    return { playerId: id, ...stats };
   }
 }

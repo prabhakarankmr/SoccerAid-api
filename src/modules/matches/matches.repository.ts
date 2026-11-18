@@ -27,6 +27,15 @@ export interface MatchStateRow {
   addedTimeSec: number;
 }
 
+export interface MatchSummaryRow {
+  id: string;
+  status: MatchStatus;
+  playersPerSide: number;
+  homeTeam: { id: string; name: string; logoUrl: string | null };
+  awayTeam: { id: string; name: string; logoUrl: string | null };
+  state: { homeScore: number; awayScore: number } | null;
+}
+
 export interface MatchEventRow {
   id: string;
   seq: number;
@@ -119,6 +128,23 @@ export class MatchesRepository {
       include: this.includeOpts(),
     });
     return match as MatchWithTeams | null;
+  }
+
+  // Backs the public "Matches" list (any authenticated user, not scoped to the requester's own
+  // teams) — a lighter select than findById's, no lineups/events, just enough for a list card.
+  findMany(filter: { status?: MatchStatus }): Promise<MatchSummaryRow[]> {
+    return this.prisma.match.findMany({
+      where: filter.status ? { status: filter.status } : undefined,
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        status: true,
+        playersPerSide: true,
+        homeTeam: { select: { id: true, name: true, logoUrl: true } },
+        awayTeam: { select: { id: true, name: true, logoUrl: true } },
+        state: { select: { homeScore: true, awayScore: true } },
+      },
+    });
   }
 
   // Reads the Team row directly (not via TeamsService) — same pattern teams.repository.ts

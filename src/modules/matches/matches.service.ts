@@ -10,6 +10,7 @@ import { RecordMatchEventDto } from './dto/record-event.dto';
 import { LineupPlayerDto, SetLineupsDto } from './dto/set-lineups.dto';
 import { UpdateMatchDto } from './dto/update-match.dto';
 import { MatchDetailEntity, MatchEventEntity } from './entities/match-detail.entity';
+import { MatchSummaryEntity } from './entities/match-summary.entity';
 import { LineupEntryInput, MatchesRepository, MatchWithTeams } from './matches.repository';
 
 function extractAssistPlayerId(payload: unknown): string | null {
@@ -76,12 +77,36 @@ export class MatchesService {
       hasPenalties: dto.hasPenalties ?? false,
     });
 
-    return this.toDetail(match);
+    return this.toDetail(match, requesterId);
   }
 
-  async getDetail(id: string): Promise<MatchDetailEntity | null> {
+  async getDetail(id: string, requesterId: string): Promise<MatchDetailEntity | null> {
     const match = await this.matchesRepository.findById(id);
-    return match ? this.toDetail(match) : null;
+    return match ? this.toDetail(match, requesterId) : null;
+  }
+
+  // Backs the "Matches" tab (§5.8 frontend) — any authenticated user, not scoped to their own
+  // teams, since watching matches live is a public feature here (§1 Product Overview).
+  async listMatches(status?: MatchStatus): Promise<MatchSummaryEntity[]> {
+    const matches = await this.matchesRepository.findMany({ status });
+
+    return matches.map((match) => ({
+      id: match.id,
+      homeTeam: {
+        id: match.homeTeam.id,
+        name: match.homeTeam.name,
+        logoUrl: match.homeTeam.logoUrl,
+      },
+      awayTeam: {
+        id: match.awayTeam.id,
+        name: match.awayTeam.name,
+        logoUrl: match.awayTeam.logoUrl,
+      },
+      playersPerSide: match.playersPerSide,
+      status: match.status,
+      homeScore: match.state?.homeScore ?? 0,
+      awayScore: match.state?.awayScore ?? 0,
+    }));
   }
 
   async setLineups(
@@ -118,7 +143,7 @@ export class MatchesService {
     await this.validateAndSetSide(match, Side.AWAY, match.awayTeamId, dto.away);
     await this.matchesRepository.setStatus(matchId, MatchStatus.LINEUPS_SET);
 
-    return this.getDetailOrThrow(matchId);
+    return this.getDetailOrThrow(matchId, requesterId);
   }
 
   /** Owner-only, same as lineups — and same status restriction: the half length isn't
@@ -143,7 +168,7 @@ export class MatchesService {
       halfDurationSec: dto.halfDurationSec,
     });
 
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterId);
   }
 
   // Kickoff — owner-only, same as lineups/settings. No MatchScorer row is created here yet
@@ -159,7 +184,7 @@ export class MatchesService {
     }
 
     const updated = await this.matchesRepository.start(matchId, requesterId);
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterId);
   }
 
   async pauseMatch(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
@@ -171,7 +196,7 @@ export class MatchesService {
     }
 
     const updated = await this.matchesRepository.pause(matchId, requesterId);
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterId);
   }
 
   async resumeMatch(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
@@ -183,7 +208,7 @@ export class MatchesService {
     }
 
     const updated = await this.matchesRepository.resume(matchId, requesterId);
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterId);
   }
 
   // Stoppage time, added to whichever half is currently in progress — not knockout-style extra
@@ -200,7 +225,7 @@ export class MatchesService {
     }
 
     const updated = await this.matchesRepository.addTime(matchId, requesterId, dto.seconds);
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterId);
   }
 
   // User-confirmed, not automatic (the clock is allowed to run past the nominal half length
@@ -222,7 +247,7 @@ export class MatchesService {
     }
 
     const updated = await this.matchesRepository.halfTime(matchId, requesterId);
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterId);
   }
 
   // Kickoff of the second half — same as the first, an explicit user action rather than
@@ -239,7 +264,7 @@ export class MatchesService {
     }
 
     const updated = await this.matchesRepository.secondHalf(matchId, requesterId);
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterId);
   }
 
   // Manual "End Match" — valid at any point once kicked off (mid first half, half-time, mid
@@ -260,7 +285,7 @@ export class MatchesService {
     }
 
     const updated = await this.matchesRepository.end(matchId, requesterId);
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterId);
   }
 
   // Scoped to GOAL/SHOT_SAVED/FOUL for now (RecordMatchEventDto) — see that file's comment.
@@ -312,7 +337,7 @@ export class MatchesService {
       createdById: requesterId,
     });
 
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterId);
   }
 
   private async findOrThrow(matchId: string): Promise<MatchWithTeams> {
@@ -416,8 +441,8 @@ export class MatchesService {
     }
   }
 
-  private async getDetailOrThrow(id: string): Promise<MatchDetailEntity> {
-    const detail = await this.getDetail(id);
+  private async getDetailOrThrow(id: string, requesterId: string): Promise<MatchDetailEntity> {
+    const detail = await this.getDetail(id, requesterId);
 
     if (!detail) {
       throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
@@ -426,7 +451,7 @@ export class MatchesService {
     return detail;
   }
 
-  private toDetail(match: MatchWithTeams): MatchDetailEntity {
+  private toDetail(match: MatchWithTeams, requesterId: string): MatchDetailEntity {
     return {
       id: match.id,
       homeTeam: {
@@ -474,6 +499,7 @@ export class MatchesService {
         period: event.period,
         createdAt: event.createdAt.toISOString(),
       })),
+      canScore: requesterId === match.homeTeam.ownerId || requesterId === match.awayTeam.ownerId,
     };
   }
 }

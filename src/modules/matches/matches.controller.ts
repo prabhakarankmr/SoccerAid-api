@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpStatus, Param, Patch, Post, Put } from '@nestjs/common';
+import { Body, Controller, Get, HttpStatus, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -7,10 +7,12 @@ import { AuthenticatedUser } from '../../common/types/authenticated-user';
 
 import { AddTimeDto } from './dto/add-time.dto';
 import { CreateMatchDto } from './dto/create-match.dto';
+import { ListMatchesDto } from './dto/list-matches.dto';
 import { RecordMatchEventDto } from './dto/record-event.dto';
 import { SetLineupsDto } from './dto/set-lineups.dto';
 import { UpdateMatchDto } from './dto/update-match.dto';
 import { MatchDetailEntity } from './entities/match-detail.entity';
+import { MatchSummaryEntity } from './entities/match-summary.entity';
 import { MatchesService } from './matches.service';
 
 @ApiTags('matches')
@@ -26,9 +28,19 @@ export class MatchesController {
     return this.matchesService.createMatch(dto, user.id);
   }
 
+  // Public "Matches" tab (§5.8 frontend) — any authenticated user, not scoped to their own
+  // teams; backs spectating matches live (§1 Product Overview).
+  @Get()
+  list(@Query() query: ListMatchesDto): Promise<MatchSummaryEntity[]> {
+    return this.matchesService.listMatches(query.status);
+  }
+
   @Get(':id')
-  async getById(@Param('id') id: string): Promise<MatchDetailEntity> {
-    const match = await this.matchesService.getDetail(id);
+  async getById(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<MatchDetailEntity> {
+    const match = await this.matchesService.getDetail(id, user.id);
 
     if (!match) {
       throw new DomainException('NOT_FOUND', 'Match not found', HttpStatus.NOT_FOUND);
