@@ -10,6 +10,7 @@ import { CreateMatchDto } from './dto/create-match.dto';
 import { ListMatchesDto } from './dto/list-matches.dto';
 import { RecordMatchEventDto } from './dto/record-event.dto';
 import { SetLineupsDto } from './dto/set-lineups.dto';
+import { StartMatchDto } from './dto/start-match.dto';
 import { UpdateMatchDto } from './dto/update-match.dto';
 import { MatchDetailEntity } from './entities/match-detail.entity';
 import { MatchSummaryEntity } from './entities/match-summary.entity';
@@ -71,8 +72,9 @@ export class MatchesController {
   startMatch(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Body() dto: StartMatchDto,
   ): Promise<MatchDetailEntity> {
-    return this.matchesService.startMatch(id, user.id);
+    return this.matchesService.startMatch(id, user.id, dto);
   }
 
   @Post(':id/events')

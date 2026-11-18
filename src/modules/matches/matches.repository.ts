@@ -182,10 +182,11 @@ export class MatchesRepository {
   }
 
   // Kickoff (first half): flips LINEUPS_SET → LIVE, starts the server-authoritative clock
-  // (`MatchState.clockStartedAt`), and opens the event log with a KICK_OFF row at seq 1.
-  // Locked (§3.2 `withMatchLock`) so a double-tap of "Kick Off" can't race itself into creating
-  // two MatchState rows or two seq-1 events.
-  async start(matchId: string, requesterId: string): Promise<MatchWithTeams> {
+  // (`MatchState.clockStartedAt`), and opens the event log with a KICK_OFF row at seq 1 —
+  // `side` is whichever team the user picked to kick off first (no coin toss modeled, just a
+  // choice, 2026-11-17). Locked (§3.2 `withMatchLock`) so a double-tap of "Kick Off" can't race
+  // itself into creating two MatchState rows or two seq-1 events.
+  async start(matchId: string, requesterId: string, side: Side): Promise<MatchWithTeams> {
     await this.prisma.withMatchLock(matchId, async (tx) => {
       const match = await tx.match.findUniqueOrThrow({ where: { id: matchId } });
 
@@ -210,6 +211,7 @@ export class MatchesRepository {
             seq: 1,
             clientEventId: `kickoff:${matchId}`,
             type: MatchEventType.KICK_OFF,
+            side,
             matchClockSec: 0,
             period: 'FIRST_HALF' satisfies MatchPeriod,
             createdById: requesterId,
@@ -350,11 +352,25 @@ export class MatchesRepository {
     return this.findByIdOrThrow(matchId);
   }
 
-  // Kickoff of the second half — explicit, same as the first (user-selected, not automatic).
+  // Kickoff of the second half — the kickoff action itself is still explicit/user-triggered
+  // (same as the first half), but which team takes it isn't asked again: standard football rule
+  // is the team that didn't kick off the first half does, so it's derived from the first-half
+  // KICK_OFF event rather than re-prompting.
   async secondHalf(matchId: string, requesterId: string): Promise<MatchWithTeams> {
     await this.prisma.withMatchLock(matchId, async (tx) => {
       const match = await tx.match.findUniqueOrThrow({ where: { id: matchId } });
       const seq = match.lastSeq + 1;
+
+      const firstKickoff = await tx.matchEvent.findFirst({
+        where: { matchId, type: MatchEventType.KICK_OFF },
+        select: { side: true },
+      });
+      const secondHalfSide =
+        firstKickoff?.side === Side.HOME
+          ? Side.AWAY
+          : firstKickoff?.side === Side.AWAY
+            ? Side.HOME
+            : null;
 
       await tx.matchState.update({
         where: { matchId },
@@ -375,6 +391,7 @@ export class MatchesRepository {
           seq,
           clientEventId: `second-half:${matchId}:${String(seq)}`,
           type: MatchEventType.SECOND_HALF_START,
+          side: secondHalfSide,
           matchClockSec: 0,
           period: 'SECOND_HALF' satisfies MatchPeriod,
           createdById: requesterId,

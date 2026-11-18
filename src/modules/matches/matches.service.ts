@@ -8,6 +8,7 @@ import { AddTimeDto } from './dto/add-time.dto';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { RecordMatchEventDto } from './dto/record-event.dto';
 import { LineupPlayerDto, SetLineupsDto } from './dto/set-lineups.dto';
+import { StartMatchDto } from './dto/start-match.dto';
 import { UpdateMatchDto } from './dto/update-match.dto';
 import { MatchDetailEntity, MatchEventEntity } from './entities/match-detail.entity';
 import { MatchSummaryEntity } from './entities/match-summary.entity';
@@ -174,7 +175,11 @@ export class MatchesService {
   // Kickoff — owner-only, same as lineups/settings. No MatchScorer row is created here yet
   // (§4's scorer-transfer model is still unused): anyone who owns either team can both set up
   // and score the match, same single-permission-tier approach the rest of this module uses.
-  async startMatch(matchId: string, requesterId: string): Promise<MatchDetailEntity> {
+  async startMatch(
+    matchId: string,
+    requesterId: string,
+    dto: StartMatchDto,
+  ): Promise<MatchDetailEntity> {
     const match = await this.findOrThrow(matchId);
 
     this.assertOwnsEitherTeam(match, requesterId, 'start this match');
@@ -183,7 +188,7 @@ export class MatchesService {
       throw new DomainException('INVALID_STATUS_TRANSITION', 'Lineups must be set before kickoff');
     }
 
-    const updated = await this.matchesRepository.start(matchId, requesterId);
+    const updated = await this.matchesRepository.start(matchId, requesterId, dto.side);
     return this.toDetail(updated, requesterId);
   }
 
