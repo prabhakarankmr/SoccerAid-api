@@ -9,6 +9,9 @@ services:
       # overrides the .env value so the container reaches the `redis` service by name
       # instead of localhost (which only works when the API runs on the host directly)
       - REDIS_URL=redis://redis:6379
+      # the image prunes devDependencies (incl. pino-pretty), so a NODE_ENV=development from .env
+      # would make the logger ask for a transport that isn't installed and crash on boot
+      - NODE_ENV=production
     depends_on:
       - redis
 
