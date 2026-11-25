@@ -12,6 +12,9 @@ COPY package.json package-lock.json ./
 # the comment in prisma.config.ts on why it reads DIRECT_URL via `process.env`, not `env()`).
 COPY prisma ./prisma
 COPY prisma.config.ts ./
+# The `prisma-client` generator infers its import extensions from tsconfig.json: without it, the
+# generated client imports `./internal/class.ts`, which the compiled dist/ can't resolve at runtime.
+COPY tsconfig.json ./
 RUN npm ci
 
 FROM deps AS build
